@@ -152,7 +152,22 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
               </select>
             </div>
 
-            <div className="space-y-3 pt-2">
+            <div>
+              <label className="block text-xs font-bold text-slate-700 uppercase mb-1">
+                ପ୍ରଶ୍ନ ଭାଷା ଚୟନ (Default Question & Answer Language)
+              </label>
+              <select
+                value={settings.defaultLanguage || 'bilingual'}
+                onChange={(e) => setSettings({ ...settings, defaultLanguage: e.target.value as any })}
+                className="w-full px-3.5 py-2 rounded-xl border border-slate-200 text-xs font-semibold"
+              >
+                <option value="bilingual">Odia & English (ଉଭୟ ଓଡ଼ିଆ ଏବଂ English ଦ୍ୱିଭାଷୀ)</option>
+                <option value="odia">Odia Only (କେବଳ ଓଡ଼ିଆ)</option>
+                <option value="english">English Only (Only English)</option>
+              </select>
+            </div>
+
+            <div className="sm:col-span-2 space-y-3 pt-1">
               <label className="flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer">
                 <input
                   type="checkbox"

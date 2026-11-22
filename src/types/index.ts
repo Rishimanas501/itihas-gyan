@@ -100,5 +100,6 @@ export interface AppSettings {
   autoBackupReminder: boolean;
   lastBackupDate?: string;
   defaultTimer: number;
+  defaultLanguage?: 'bilingual' | 'odia' | 'english';
   theme: 'emerald' | 'navy' | 'dark';
 }

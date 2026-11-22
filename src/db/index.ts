@@ -35,6 +35,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   bonusMarkValue: 1,
   autoBackupReminder: true,
   defaultTimer: 30,
+  defaultLanguage: 'bilingual',
   theme: 'emerald'
 };
 
