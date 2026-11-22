@@ -1,0 +1,624 @@
+import React, { useState, useEffect } from 'react';
+import { 
+  Play, 
+  Pause, 
+  Square, 
+  ChevronRight, 
+  ChevronLeft, 
+  Eye, 
+  EyeOff, 
+  HelpCircle, 
+  Check, 
+  X, 
+  Award, 
+  Clock, 
+  RotateCcw, 
+  QrCode, 
+  Copy, 
+  Users, 
+  Hand, 
+  CheckCircle2, 
+  XCircle, 
+  Sparkles,
+  Trophy,
+  ExternalLink,
+  Info
+} from 'lucide-react';
+import { QRCodeSVG } from 'qrcode.react';
+import type { Question, QuizSession, HandRaiseRecord, QuestionScoreRecord } from '../types';
+import { realtimeService } from '../services/socketService';
+import { db } from '../db';
+
+interface TeacherControlScreenProps {
+  session: QuizSession;
+  questions: Question[];
+  onBack: () => void;
+  onOpenPresentation: () => void;
+  onOpenStudentView: () => void;
+}
+
+export const TeacherControlScreen: React.FC<TeacherControlScreenProps> = ({
+  session: initialSession,
+  questions,
+  onBack,
+  onOpenPresentation,
+  onOpenStudentView
+}) => {
+  const [session, setSession] = useState<QuizSession>(initialSession);
+  const [currentQIndex, setCurrentQIndex] = useState(initialSession.currentQuestionIndex || 0);
+  const [revealAnswer, setRevealAnswer] = useState(false);
+  const [showDescription, setShowDescription] = useState(false);
+  
+  // Timer state
+  const [timerDuration, setTimerDuration] = useState(session.timerDuration || 30);
+  const [timerRemaining, setTimerRemaining] = useState(session.timerDuration || 30);
+  const [isTimerRunning, setIsTimerRunning] = useState(false);
+
+  // Real-time student & hand-raise state
+  const [handRaises, setHandRaises] = useState<HandRaiseRecord[]>([]);
+  const [selectedStudent, setSelectedStudent] = useState<HandRaiseRecord | null>(null);
+  const [studentCount, setStudentCount] = useState(0);
+  const [isQrModalOpen, setIsQrModalOpen] = useState(false);
+  const [copiedLink, setCopiedLink] = useState(false);
+
+  // Question currently displayed
+  const currentQuestion: Question | undefined = questions[currentQIndex];
+
+  // Join link for students
+  const joinUrl = `${window.location.origin}/?view=student&pin=${session.pin}`;
+
+  // Initialize teacher session on mount
+  useEffect(() => {
+    realtimeService.initTeacherSession(session, questions);
+
+    // Subscribe to student hand raises
+    const unsubHandRaises = realtimeService.on('hand_raises_updated', (data: any) => {
+      if (data && data.handRaises) {
+        setHandRaises(data.handRaises);
+      }
+    });
+
+    const unsubStudents = realtimeService.on('student_list_updated', (data: any) => {
+      if (data && data.studentCount !== undefined) {
+        setStudentCount(data.studentCount);
+      }
+    });
+
+    return () => {
+      unsubHandRaises();
+      unsubStudents();
+    };
+  }, [session.pin]);
+
+  // Countdown Timer Interval
+  useEffect(() => {
+    let interval: any = null;
+    if (isTimerRunning && timerRemaining > 0) {
+      interval = setInterval(() => {
+        setTimerRemaining((prev) => {
+          if (prev <= 1) {
+            setIsTimerRunning(false);
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    }
+    return () => clearInterval(interval);
+  }, [isTimerRunning, timerRemaining]);
+
+  const handleNextQuestion = () => {
+    if (currentQIndex < questions.length - 1) {
+      const nextIndex = currentQIndex + 1;
+      setCurrentQIndex(nextIndex);
+      setRevealAnswer(false);
+      setShowDescription(false);
+      setHandRaises([]);
+      setSelectedStudent(null);
+      setTimerRemaining(timerDuration);
+      setIsTimerRunning(false);
+
+      realtimeService.changeQuestion(session.pin, nextIndex);
+    }
+  };
+
+  const handlePrevQuestion = () => {
+    if (currentQIndex > 0) {
+      const prevIndex = currentQIndex - 1;
+      setCurrentQIndex(prevIndex);
+      setRevealAnswer(false);
+      setShowDescription(false);
+      setHandRaises([]);
+      setSelectedStudent(null);
+      setTimerRemaining(timerDuration);
+      setIsTimerRunning(false);
+
+      realtimeService.changeQuestion(session.pin, prevIndex);
+    }
+  };
+
+  const handleToggleReveal = () => {
+    const nextVal = !revealAnswer;
+    setRevealAnswer(nextVal);
+    realtimeService.revealAnswer(session.pin, nextVal);
+  };
+
+  const handleToggleDescription = () => {
+    const nextVal = !showDescription;
+    setShowDescription(nextVal);
+    realtimeService.toggleDescription(session.pin, nextVal);
+  };
+
+  const handleResetQuestion = () => {
+    setRevealAnswer(false);
+    setShowDescription(false);
+    setHandRaises([]);
+    setSelectedStudent(null);
+    setTimerRemaining(timerDuration);
+    setIsTimerRunning(false);
+    realtimeService.changeQuestion(session.pin, currentQIndex);
+  };
+
+  const handleAwardMarks = async (
+    status: 'correct' | 'incorrect' | 'partial' | 'bonus' | 'no_marks'
+  ) => {
+    if (!selectedStudent || !currentQuestion) {
+      alert('Please select a student from the Hand Raise list first.');
+      return;
+    }
+
+    let marks = 0;
+    if (status === 'correct') marks = currentQuestion.marks;
+    if (status === 'partial') marks = Math.max(0.5, currentQuestion.marks / 2);
+    if (status === 'bonus') marks = 1;
+    if (status === 'incorrect' || status === 'no_marks') marks = 0;
+
+    // Record in local database
+    await db.scores.add({
+      rollNo: selectedStudent.rollNo,
+      name: selectedStudent.name,
+      questionIndex: currentQIndex,
+      marks,
+      markingStatus: status,
+      handRaisedRank: selectedStudent.rank
+    });
+
+    // Broadcast in real-time
+    realtimeService.awardMarks(
+      session.pin,
+      selectedStudent.rollNo,
+      selectedStudent.name,
+      currentQIndex,
+      marks,
+      status
+    );
+
+    alert(`Marks recorded for ${selectedStudent.name}: ${marks} Mark(s) [${status.toUpperCase()}]`);
+
+    // If incorrect, prompt teacher to invite next student
+    if (status === 'incorrect') {
+      const nextStudent = handRaises.find(h => h.rank === (selectedStudent.rank + 1));
+      if (nextStudent) {
+        setSelectedStudent(nextStudent);
+      }
+    }
+  };
+
+  const copyJoinLink = () => {
+    navigator.clipboard.writeText(joinUrl);
+    setCopiedLink(true);
+    setTimeout(() => setCopiedLink(false), 2000);
+  };
+
+  const handleEndQuiz = async () => {
+    if (confirm('Are you sure you want to conclude this live quiz session?')) {
+      realtimeService.endSession(session.pin);
+      await db.sessions.update(session.id, {
+        status: 'ended',
+        endedAt: new Date().toISOString()
+      });
+      onBack();
+    }
+  };
+
+  return (
+    <div className="max-w-6xl mx-auto px-4 py-6 space-y-6">
+      {/* Top Session Bar */}
+      <div className="bg-slate-900 text-white rounded-3xl p-4 sm:p-6 shadow-xl flex flex-col md:flex-row items-start md:items-center justify-between gap-4 border border-slate-800">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
+            <span className="text-xs uppercase font-extrabold tracking-widest text-emerald-400">
+              ଲାଇଭ୍ କୁଇଜ୍ ନିୟନ୍ତ୍ରଣ (TEACHER CONTROL PANEL)
+            </span>
+          </div>
+          <h2 className="font-odia font-bold text-xl sm:text-2xl text-amber-300">
+            {session.title}
+          </h2>
+          <p className="text-xs text-slate-400">
+            {session.subject} • {session.topic}
+          </p>
+        </div>
+
+        {/* PIN & QR Shortcuts */}
+        <div className="flex flex-wrap items-center gap-2.5">
+          <div className="px-4 py-2 rounded-2xl bg-slate-800/80 border border-slate-700 flex items-center gap-3">
+            <div>
+              <div className="text-[10px] text-slate-400 uppercase font-bold">SESSION PIN</div>
+              <div className="font-mono text-xl sm:text-2xl font-black text-amber-400 tracking-wider">
+                {session.pin}
+              </div>
+            </div>
+            <button
+              onClick={() => setIsQrModalOpen(true)}
+              className="p-2 rounded-xl bg-slate-700 hover:bg-slate-600 text-white transition-colors"
+              title="Show QR Code"
+            >
+              <QrCode className="w-5 h-5 text-amber-300" />
+            </button>
+          </div>
+
+          <button
+            onClick={copyJoinLink}
+            className="px-3.5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-bold flex items-center gap-1.5 transition-colors"
+          >
+            <Copy className="w-4 h-4 text-emerald-400" />
+            <span>{copiedLink ? 'ଲିଙ୍କ୍ କପି ହେଲା!' : 'Join Link'}</span>
+          </button>
+
+          <button
+            onClick={onOpenPresentation}
+            className="px-3.5 py-2.5 rounded-xl bg-teal-700 hover:bg-teal-600 text-white text-xs font-bold shadow-xs flex items-center gap-1.5 transition-colors"
+            title="Open Presentation Screen for Projector / Flat Panel"
+          >
+            <ExternalLink className="w-4 h-4" />
+            <span>ପ୍ରୋଜେକ୍ଟର ସ୍କ୍ରିନ୍</span>
+          </button>
+
+          <button
+            onClick={handleEndQuiz}
+            className="px-3.5 py-2.5 rounded-xl bg-rose-700 hover:bg-rose-800 text-white text-xs font-bold shadow-xs transition-colors flex items-center gap-1"
+          >
+            <Square className="w-3.5 h-3.5 fill-current" />
+            <span>କୁଇଜ୍ ସମାପ୍ତ</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Main Grid: Left = Active Question & Controls, Right = Hand Raise Queue & Marking */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Left Column (2 Cols): Question Card & Reveal Controls */}
+        <div className="lg:col-span-2 space-y-4">
+          {/* Question Display Card */}
+          <div className="bg-white rounded-3xl p-6 border border-slate-200 shadow-sm space-y-5">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <span className="font-bold text-xs uppercase px-3 py-1 rounded-full bg-emerald-100 text-emerald-900 border border-emerald-300">
+                ପ୍ରଶ୍ନ {currentQIndex + 1} / {questions.length} ({currentQuestion?.pattern.toUpperCase()} • {currentQuestion?.marks} Mark{currentQuestion && currentQuestion.marks > 1 ? 's' : ''})
+              </span>
+
+              {/* Timer Bar */}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setIsTimerRunning(!isTimerRunning)}
+                  className={`p-1.5 rounded-xl border flex items-center gap-1.5 text-xs font-bold ${
+                    isTimerRunning 
+                      ? 'bg-amber-100 border-amber-300 text-amber-900 animate-pulse' 
+                      : 'bg-slate-100 border-slate-200 text-slate-700'
+                  }`}
+                >
+                  <Clock className="w-4 h-4" />
+                  <span>{timerRemaining}s</span>
+                  {isTimerRunning ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3 fill-current" />}
+                </button>
+
+                <select
+                  value={timerDuration}
+                  onChange={(e) => {
+                    const dur = Number(e.target.value);
+                    setTimerDuration(dur);
+                    setTimerRemaining(dur);
+                    setIsTimerRunning(false);
+                  }}
+                  className="text-xs p-1.5 rounded-xl border border-slate-200 bg-slate-50"
+                >
+                  <option value={15}>15s</option>
+                  <option value={30}>30s</option>
+                  <option value={45}>45s</option>
+                  <option value={60}>60s</option>
+                  <option value={0}>Timer Off</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Question Text in Large Font */}
+            <h3 className="font-odia font-black text-xl sm:text-2xl text-slate-900 leading-snug">
+              {currentQuestion?.question}
+            </h3>
+
+            {/* Options display */}
+            {currentQuestion?.options && currentQuestion.options.length > 0 && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
+                {currentQuestion.options.map((opt, optIdx) => {
+                  const isCorrect = opt === currentQuestion.correctAnswer;
+                  return (
+                    <div
+                      key={optIdx}
+                      className={`p-3.5 rounded-2xl border text-sm font-medium transition-all flex items-center gap-3 ${
+                        revealAnswer && isCorrect
+                          ? 'bg-emerald-600 text-white border-emerald-600 shadow-md ring-2 ring-emerald-400'
+                          : revealAnswer && !isCorrect
+                          ? 'bg-slate-50 border-slate-200 text-slate-400'
+                          : 'bg-slate-50 border-slate-200 text-slate-800'
+                      }`}
+                    >
+                      <span className={`w-6 h-6 rounded-full flex items-center justify-center font-bold text-xs ${
+                        revealAnswer && isCorrect ? 'bg-white text-emerald-900' : 'bg-slate-200 text-slate-700'
+                      }`}>
+                        {String.fromCharCode(65 + optIdx)}
+                      </span>
+                      <span>{opt}</span>
+                      {revealAnswer && isCorrect && <Check className="w-4 h-4 ml-auto text-white stroke-[3]" />}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Model Answer preview if revealed */}
+            {revealAnswer && currentQuestion?.modelAnswer && (
+              <div className="p-4 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-950 text-xs sm:text-sm space-y-1">
+                <span className="font-bold text-emerald-900 block">ମଡେଲ ଉତ୍ତର (Model Answer):</span>
+                <p className="leading-relaxed">{currentQuestion.modelAnswer}</p>
+              </div>
+            )}
+
+            {/* In-Depth Description Panel (Expanded when Show Description is clicked) */}
+            {showDescription && (
+              <div className="p-4 rounded-2xl bg-amber-50/80 border border-amber-300/80 text-amber-950 text-xs sm:text-sm space-y-2 animate-in fade-in-50">
+                <div className="flex items-center gap-1.5 font-bold text-amber-900 text-sm">
+                  <Info className="w-4 h-4" />
+                  <span>ବିସ୍ତୃତ ଐତିହାସିକ ବ୍ୟାଖ୍ୟା (In-Depth Explanation & Fact Check):</span>
+                </div>
+                <p className="leading-relaxed font-normal">
+                  {currentQuestion?.explanationCorrect}
+                </p>
+
+                {currentQuestion?.explanationIncorrect && currentQuestion.explanationIncorrect.length > 0 && (
+                  <div className="mt-2 pt-2 border-t border-amber-200/80 space-y-1">
+                    <span className="font-bold text-xs text-amber-900 block">ଭୁଲ୍ ବିକଳ୍ପଗୁଡ଼ିକ କାହିଁକି ଅଯଥାର୍ଥ:</span>
+                    {currentQuestion.explanationIncorrect.map((exp, eIdx) => (
+                      <p key={eIdx} className="text-xs text-amber-900/90 leading-normal">
+                        • {exp}
+                      </p>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Teacher Control Action Buttons (PART 12 & 13) */}
+            <div className="pt-4 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                {/* Reveal Answer Button */}
+                <button
+                  onClick={handleToggleReveal}
+                  className={`px-4 py-2.5 rounded-xl font-bold text-xs uppercase tracking-wider shadow-xs active:scale-95 transition-all flex items-center gap-2 ${
+                    revealAnswer
+                      ? 'bg-emerald-800 text-white'
+                      : 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                  }`}
+                >
+                  {revealAnswer ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  <span>{revealAnswer ? 'ଉତ୍ତର ଲୁଚାନ୍ତୁ' : 'Reveal Answer (ଉତ୍ତର ଦେଖାନ୍ତୁ)'}</span>
+                </button>
+
+                {/* Show Description Button */}
+                <button
+                  onClick={handleToggleDescription}
+                  className={`px-4 py-2.5 rounded-xl font-bold text-xs uppercase tracking-wider shadow-xs active:scale-95 transition-all flex items-center gap-2 ${
+                    showDescription
+                      ? 'bg-amber-700 text-white'
+                      : 'bg-amber-500 hover:bg-amber-600 text-slate-950'
+                  }`}
+                >
+                  <Info className="w-4 h-4" />
+                  <span>{showDescription ? 'ବ୍ୟାଖ୍ୟା ଲୁଚାନ୍ତୁ' : 'Show Description (ବ୍ୟାଖ୍ୟା)'}</span>
+                </button>
+
+                <button
+                  onClick={handleResetQuestion}
+                  className="p-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs transition-colors"
+                  title="Reset Question & Clear Hands"
+                >
+                  <RotateCcw className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Prev / Next Question Navigation */}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handlePrevQuestion}
+                  disabled={currentQIndex === 0}
+                  className="px-3.5 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 disabled:opacity-40 text-slate-700 text-xs font-bold flex items-center gap-1"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                  <span>ପୂର୍ବ (Prev)</span>
+                </button>
+                <button
+                  onClick={handleNextQuestion}
+                  disabled={currentQIndex === questions.length - 1}
+                  className="px-4 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 disabled:opacity-40 text-white text-xs font-bold flex items-center gap-1 shadow-xs"
+                >
+                  <span>ପରବର୍ତ୍ତୀ (Next)</span>
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Right Column (1 Col): Digital Hand Raising Queue & Scoring */}
+        <div className="space-y-4">
+          <div className="bg-white rounded-3xl p-5 border border-slate-200 shadow-sm space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <div className="p-2 rounded-xl bg-amber-100 text-amber-800">
+                  <Hand className="w-4 h-4" />
+                </div>
+                <div>
+                  <h4 className="font-odia font-bold text-base text-slate-900">
+                    ହାତ ଟେକିବା ତାଲିକା (Hand Raises)
+                  </h4>
+                  <p className="text-[10px] text-slate-500 uppercase font-bold">
+                    Server Timestamp Ranked Queue
+                  </p>
+                </div>
+              </div>
+
+              <span className="font-mono text-xs font-bold px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-700">
+                {handRaises.length} Raised
+              </span>
+            </div>
+
+            {/* Hand Raised List */}
+            <div className="space-y-2 max-h-60 overflow-y-auto">
+              {handRaises.length === 0 ? (
+                <div className="text-center py-8 text-slate-400 text-xs">
+                  କୌଣସି ଛାତ୍ର ଏପର୍ଯ୍ୟନ୍ତ ହାତ ଟେକି ନାହାନ୍ତି। ମୋବାଇଲରୁ "Raise Hand" ଚିପିବାକୁ କୁହନ୍ତୁ।
+                </div>
+              ) : (
+                handRaises.map((hr) => {
+                  const isSelected = selectedStudent?.rollNo === hr.rollNo;
+                  return (
+                    <div
+                      key={hr.rollNo}
+                      onClick={() => setSelectedStudent(hr)}
+                      className={`p-3 rounded-2xl border transition-all cursor-pointer flex items-center justify-between ${
+                        isSelected
+                          ? 'bg-amber-50 border-amber-400 shadow-sm ring-1 ring-amber-400'
+                          : 'bg-slate-50 border-slate-200 hover:border-slate-300'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <span className={`w-7 h-7 rounded-xl flex items-center justify-center font-bold text-xs ${
+                          hr.rank === 1 ? 'bg-amber-400 text-slate-950 font-black' :
+                          hr.rank === 2 ? 'bg-slate-300 text-slate-800' :
+                          hr.rank === 3 ? 'bg-amber-700 text-white' : 'bg-slate-200 text-slate-600'
+                        }`}>
+                          #{hr.rank}
+                        </span>
+                        <div>
+                          <div className="font-semibold text-xs text-slate-900 leading-tight">
+                            {hr.name}
+                          </div>
+                          <div className="font-mono text-[10px] text-slate-500">
+                            {hr.rollNo}
+                          </div>
+                        </div>
+                      </div>
+
+                      {isSelected && (
+                        <span className="text-[10px] font-bold text-amber-800 uppercase bg-amber-200/60 px-2 py-0.5 rounded-full">
+                          ଚୟନିତ
+                        </span>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            {/* Scoring & Marks Section (PART 11) */}
+            <div className="pt-3 border-t border-slate-100 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-slate-700 uppercase">
+                  ମାର୍କ ପ୍ରଦାନ (Award Marks)
+                </span>
+                {selectedStudent ? (
+                  <span className="text-xs font-bold text-blue-700">
+                    {selectedStudent.name}
+                  </span>
+                ) : (
+                  <span className="text-[11px] text-slate-400 italic">
+                    ଛାତ୍ର ଚୟନ କରନ୍ତୁ
+                  </span>
+                )}
+              </div>
+
+              {/* Action Buttons: Correct, Incorrect, Partial, Bonus */}
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={() => handleAwardMarks('correct')}
+                  disabled={!selectedStudent}
+                  className="px-3 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white text-xs font-bold flex items-center justify-center gap-1.5 shadow-xs active:scale-95 transition-all"
+                >
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>ସଠିକ୍ (+{currentQuestion?.marks || 1})</span>
+                </button>
+
+                <button
+                  onClick={() => handleAwardMarks('incorrect')}
+                  disabled={!selectedStudent}
+                  className="px-3 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 disabled:opacity-40 text-white text-xs font-bold flex items-center justify-center gap-1.5 shadow-xs active:scale-95 transition-all"
+                >
+                  <XCircle className="w-4 h-4" />
+                  <span>ଭୁଲ୍ (0 Mark)</span>
+                </button>
+
+                <button
+                  onClick={() => handleAwardMarks('partial')}
+                  disabled={!selectedStudent}
+                  className="px-3 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 disabled:opacity-40 text-slate-950 text-xs font-bold flex items-center justify-center gap-1.5 active:scale-95 transition-all"
+                >
+                  <Award className="w-3.5 h-3.5" />
+                  <span>ଆଂଶିକ (Partial)</span>
+                </button>
+
+                <button
+                  onClick={() => handleAwardMarks('bonus')}
+                  disabled={!selectedStudent}
+                  className="px-3 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 disabled:opacity-40 text-white text-xs font-bold flex items-center justify-center gap-1.5 active:scale-95 transition-all"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>ବୋନସ୍ (+1)</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* QR Code Modal for Classroom Display */}
+      {isQrModalOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-sm w-full p-6 text-center space-y-4 shadow-2xl">
+            <h3 className="font-odia font-bold text-xl text-slate-900">
+              କୁଇଜ୍ ଯୋଗଦାନ QR କୋଡ୍
+            </h3>
+            <p className="text-xs text-slate-500">
+              ମୋବାଇଲ୍ କ୍ୟାମେରା ଦ୍ୱାରା ସ୍କାନ୍ କରି ସିଧାସଳଖ ଯୋଗ ଦିଅନ୍ତୁ:
+            </p>
+
+            <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 inline-block shadow-inner">
+              <QRCodeSVG value={joinUrl} size={220} level="M" />
+            </div>
+
+            <div className="space-y-1">
+              <div className="text-xs text-slate-400 font-bold uppercase">SESSION PIN</div>
+              <div className="font-mono text-3xl font-black text-emerald-800 tracking-widest">
+                {session.pin}
+              </div>
+            </div>
+
+            <button
+              onClick={() => setIsQrModalOpen(false)}
+              className="w-full py-2.5 rounded-xl bg-slate-900 text-white text-xs font-bold"
+            >
+              ବନ୍ଦ କରନ୍ତୁ (Close)
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};

@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <linearGradient id="bg-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#064e3b" />
+      <stop offset="50%" stop-color="#0f766e" />
+      <stop offset="100%" stop-color="#0f172a" />
+    </linearGradient>
+    <linearGradient id="gold-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fef08a" />
+      <stop offset="50%" stop-color="#f59e0b" />
+      <stop offset="100%" stop-color="#b45309" />
+    </linearGradient>
+    <linearGradient id="scroll-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#fef9c3" />
+      <stop offset="100%" stop-color="#fde047" />
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000000" flood-opacity="0.45" />
+    </filter>
+  </defs>
+
+  <!-- Background rounded shield -->
+  <rect width="512" height="512" rx="128" fill="url(#bg-grad)" />
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="none" stroke="url(#gold-grad)" stroke-width="4" stroke-opacity="0.4" />
+
+  <!-- Sun rays / Ancient Knowledge Aura -->
+  <g opacity="0.15" stroke="#f59e0b" stroke-width="3" stroke-dasharray="6 6">
+    <circle cx="256" cy="220" r="140" fill="none" />
+    <circle cx="256" cy="220" r="180" fill="none" />
+    <line x1="256" y1="20" x2="256" y2="420" />
+    <line x1="56" y1="220" x2="456" y2="220" />
+    <line x1="115" y1="79" x2="397" y2="361" />
+    <line x1="115" y1="361" x2="397" y2="79" />
+  </g>
+
+  <!-- Historical Konark Wheel Motif / Knowledge Chakra -->
+  <circle cx="256" cy="210" r="90" fill="none" stroke="url(#gold-grad)" stroke-width="10" filter="url(#shadow)" />
+  <circle cx="256" cy="210" r="32" fill="#064e3b" stroke="url(#gold-grad)" stroke-width="6" />
+  <!-- Spokes -->
+  <g stroke="url(#gold-grad)" stroke-width="5" stroke-linecap="round">
+    <line x1="256" y1="120" x2="256" y2="300" />
+    <line x1="166" y1="210" x2="346" y2="210" />
+    <line x1="192" y1="146" x2="320" y2="274" />
+    <line x1="192" y1="274" x2="320" y2="146" />
+  </g>
+
+  <!-- Open Manuscript / Ancient History Book -->
+  <g filter="url(#shadow)">
+    <!-- Left Page -->
+    <path d="M120,320 C170,290 230,300 256,325 L256,385 C230,360 170,350 120,380 Z" fill="#f8fafc" />
+    <path d="M126,324 C172,298 226,306 250,328 L250,378 C226,356 172,348 126,374 Z" fill="url(#scroll-grad)" opacity="0.85" />
+    <!-- Right Page -->
+    <path d="M392,320 C342,290 282,300 256,325 L256,385 C282,360 342,350 392,380 Z" fill="#f1f5f9" />
+    <path d="M386,324 C340,298 286,306 262,328 L262,378 C286,356 340,348 386,374 Z" fill="url(#scroll-grad)" opacity="0.85" />
+    <!-- Book Spine -->
+    <line x1="256" y1="325" x2="256" y2="385" stroke="#92400e" stroke-width="4" stroke-linecap="round" />
+    <!-- Text Lines on Palm Leaf / Book -->
+    <g stroke="#78350f" stroke-width="2" stroke-linecap="round" opacity="0.6">
+      <line x1="145" y1="335" x2="230" y2="330" />
+      <line x1="145" y1="347" x2="230" y2="342" />
+      <line x1="145" y1="359" x2="220" y2="354" />
+      <line x1="282" y1="330" x2="367" y2="335" />
+      <line x1="282" y1="342" x2="367" y2="347" />
+      <line x1="292" y1="354" x2="367" y2="359" />
+    </g>
+  </g>
+
+  <!-- Torch / Flame of Gyan / Knowledge -->
+  <g filter="url(#shadow)">
+    <path d="M256,120 C242,150 236,170 244,185 C250,195 262,195 268,185 C276,170 270,150 256,120 Z" fill="url(#gold-grad)" />
+    <path d="M256,138 C248,158 246,170 250,180 C253,185 259,185 262,180 C266,170 264,158 256,138 Z" fill="#ffffff" opacity="0.9" />
+  </g>
+
+  <!-- Text: Odia Script in Banner area -->
+  <text x="256" y="445" font-family="'Noto Sans Oriya', 'Kalinga', sans-serif" font-size="44" font-weight="900" fill="#fef08a" text-anchor="middle" letter-spacing="1">
+    ଇତିହାସ ଜ୍ଞାନ
+  </text>
+  <text x="256" y="478" font-family="'Outfit', 'Inter', sans-serif" font-size="22" font-weight="700" fill="#a7f3d0" text-anchor="middle" letter-spacing="4">
+    ITIHASH GYAN
+  </text>
+</svg>
