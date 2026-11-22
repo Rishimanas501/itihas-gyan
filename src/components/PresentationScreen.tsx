@@ -1,20 +1,15 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Maximize2, 
   Minimize2, 
-  Clock, 
   Users, 
   Hand, 
-  Check, 
-  X, 
   Trophy, 
-  Sparkles, 
-  HelpCircle,
-  Info,
-  Medal,
-  Flame,
-  CheckCircle2,
-  XCircle
+  Info, 
+  Medal, 
+  Flame, 
+  CheckCircle2, 
+  XCircle 
 } from 'lucide-react';
 import { BrandHeader } from './BrandHeader';
 import type { Question, QuizSession, HandRaiseRecord } from '../types';
@@ -40,7 +35,7 @@ export const PresentationScreen: React.FC<PresentationScreenProps> = ({
   const [showLeaderboard, setShowLeaderboard] = useState(false);
   const [leaderboard, setLeaderboard] = useState<any[]>([]);
 
-  // Interactive option click state on presentation screen
+  // Interactive option click state: ONLY 1 option is highlighted at a time
   const [clickedOptions, setClickedOptions] = useState<{ [index: number]: 'correct' | 'wrong' }>({});
   const [lastFeedback, setLastFeedback] = useState<{
     isCorrect: boolean;
@@ -49,7 +44,17 @@ export const PresentationScreen: React.FC<PresentationScreenProps> = ({
     optIndex: number;
   } | null>(null);
 
+  const feedbackRef = useRef<HTMLDivElement>(null);
   const currentQuestion: Question | undefined = questions[currentQIndex];
+
+  // Auto-scroll to feedback description when an option is clicked or description is shown
+  useEffect(() => {
+    if (lastFeedback || showDescription) {
+      setTimeout(() => {
+        feedbackRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }, 100);
+    }
+  }, [lastFeedback, showDescription]);
 
   // Listen to realtime updates from teacher controls
   useEffect(() => {
@@ -72,10 +77,10 @@ export const PresentationScreen: React.FC<PresentationScreenProps> = ({
 
     const unsubOption = realtimeService.on('option_clicked', (data: any) => {
       if (data && data.optIndex !== undefined) {
-        setClickedOptions(prev => ({
-          ...prev,
+        // ONLY highlight the newly clicked option
+        setClickedOptions({
           [data.optIndex]: data.isCorrect ? 'correct' : 'wrong'
-        }));
+        });
         setLastFeedback({
           isCorrect: data.isCorrect,
           text: data.optionText,
@@ -143,19 +148,19 @@ export const PresentationScreen: React.FC<PresentationScreenProps> = ({
     let explanation = '';
     if (isCorrect) {
       explanation = currentQuestion.explanationCorrect || 
-        `ଏହା ସମ୍ପୂର୍ଣ୍ଣ ସଠିକ୍ ଉତ୍ତର ଅଟେ। ପ୍ରଦତ୍ତ ଐତିହାସିକ ତଥ୍ୟ ଅନୁସାରେ "${opt}" ସଠିକ୍। (Correct answer!)`;
+        `ଏହା ସମ୍ପୂର୍ଣ୍ଣ ସଠିକ୍ ଉତ୍ତର ଅଟେ। ପ୍ରଦତ୍ତ ଐତିହାସିକ ତଥ୍ୟ ଅନୁସାରେ "${opt}" ସଠିକ୍। (Correct answer based on verified historical facts.)`;
     } else {
       if (currentQuestion.explanationIncorrect && currentQuestion.explanationIncorrect[optIdx]) {
         explanation = currentQuestion.explanationIncorrect[optIdx];
       } else {
-        explanation = `"${opt}" ଏହି ପ୍ରଶ୍ନ ପାଇଁ ଭୁଲ୍ ବିକଳ୍ପ ଅଟେ। ଦୟାକରି ଅନ୍ୟ ବିକଳ୍ପ ଚେଷ୍ଟା କରନ୍ତୁ! (Incorrect option. Please try another option!)`;
+        explanation = `"${opt}" ଏହି ପ୍ରଶ୍ନ ପାଇଁ ଭୁଲ୍ ବିକଳ୍ପ ଅଟେ। ଦୟାକରି ଅନ୍ୟ ବିକଳ୍ପ ଚେଷ୍ଟା କରନ୍ତୁ! (Incorrect option. Please check the other choices and try again!)`;
       }
     }
 
-    setClickedOptions(prev => ({
-      ...prev,
+    // ONLY highlight the newly clicked option, resetting previous ones
+    setClickedOptions({
       [optIdx]: isCorrect ? 'correct' : 'wrong'
-    }));
+    });
 
     setLastFeedback({
       isCorrect,
@@ -182,56 +187,56 @@ export const PresentationScreen: React.FC<PresentationScreenProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950 text-white flex flex-col justify-between overflow-hidden select-none">
+    <div className="fixed inset-0 z-50 bg-slate-950 text-white flex flex-col overflow-y-auto select-none">
       {/* Top Bar for Digital Flat Panel */}
-      <div className="bg-slate-900/90 backdrop-blur-md px-6 py-4 border-b border-slate-800 flex items-center justify-between gap-4">
+      <div className="sticky top-0 z-40 bg-slate-900/95 backdrop-blur-md px-4 sm:px-6 py-3 border-b border-slate-800 flex items-center justify-between gap-4 shrink-0 shadow-lg">
         <BrandHeader size="sm" lightText={true} />
 
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-3">
           {/* Joined Students Counter */}
-          <div className="flex items-center gap-2 bg-slate-800/80 px-4 py-2 rounded-2xl border border-slate-700">
+          <div className="flex items-center gap-2 bg-slate-800/80 px-3 sm:px-4 py-1.5 rounded-2xl border border-slate-700">
             <Users className="w-4 h-4 text-emerald-400" />
-            <span className="font-mono text-base font-bold text-emerald-300">
+            <span className="font-mono text-sm sm:text-base font-bold text-emerald-300">
               {studentCount} Joined
             </span>
           </div>
 
           {/* Hand Raise Counter */}
-          <div className="flex items-center gap-2 bg-slate-800/80 px-4 py-2 rounded-2xl border border-slate-700">
+          <div className="flex items-center gap-2 bg-slate-800/80 px-3 sm:px-4 py-1.5 rounded-2xl border border-slate-700">
             <Hand className="w-4 h-4 text-amber-400 animate-bounce" />
-            <span className="font-mono text-base font-bold text-amber-300">
+            <span className="font-mono text-sm sm:text-base font-bold text-amber-300">
               {handRaises.length} Raised
             </span>
           </div>
 
           {/* Session PIN */}
-          <div className="hidden sm:flex items-center gap-2 bg-slate-800/80 px-4 py-2 rounded-2xl border border-slate-700 font-mono">
+          <div className="hidden sm:flex items-center gap-2 bg-slate-800/80 px-3.5 py-1.5 rounded-2xl border border-slate-700 font-mono">
             <span className="text-xs text-slate-400 font-bold">PIN:</span>
-            <span className="text-lg font-black text-amber-400 tracking-widest">{initialSession.pin}</span>
+            <span className="text-base sm:text-lg font-black text-amber-400 tracking-widest">{initialSession.pin}</span>
           </div>
 
           {/* Leaderboard Toggle */}
           <button
             onClick={() => setShowLeaderboard(!showLeaderboard)}
-            className="p-2.5 rounded-2xl bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 transition-colors"
+            className="p-2 sm:p-2.5 rounded-2xl bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 transition-colors"
             title="Toggle Leaderboard"
           >
-            <Trophy className="w-5 h-5" />
+            <Trophy className="w-4 h-4 sm:w-5 sm:h-5" />
           </button>
 
           {/* Fullscreen Button */}
           <button
             onClick={toggleFullscreen}
-            className="p-2.5 rounded-2xl bg-slate-800 hover:bg-slate-700 text-white border border-slate-700 transition-colors"
+            className="p-2 sm:p-2.5 rounded-2xl bg-slate-800 hover:bg-slate-700 text-white border border-slate-700 transition-colors"
             title="Toggle Fullscreen"
           >
-            {isFullscreen ? <Minimize2 className="w-5 h-5" /> : <Maximize2 className="w-5 h-5" />}
+            {isFullscreen ? <Minimize2 className="w-4 h-4 sm:w-5 sm:h-5" /> : <Maximize2 className="w-4 h-4 sm:w-5 sm:h-5" />}
           </button>
 
           {/* Exit Button */}
           <button
             onClick={onExit}
-            className="px-3.5 py-2 rounded-2xl bg-rose-900/60 hover:bg-rose-800 text-rose-200 border border-rose-700 text-xs font-bold transition-colors"
+            className="px-3 py-1.5 rounded-2xl bg-rose-900/70 hover:bg-rose-800 text-rose-200 border border-rose-700 text-xs font-bold transition-colors"
           >
             ପ୍ରସ୍ଥାନ (Exit)
           </button>
@@ -239,10 +244,10 @@ export const PresentationScreen: React.FC<PresentationScreenProps> = ({
       </div>
 
       {/* Main Classroom Presentation Arena */}
-      <div className="flex-1 p-6 lg:p-12 flex flex-col justify-center max-w-7xl mx-auto w-full">
+      <div className="flex-1 p-4 sm:p-6 lg:p-8 flex flex-col justify-start max-w-6xl mx-auto w-full space-y-4">
         {showLeaderboard ? (
           /* LEADERBOARD VIEW */
-          <div className="bg-slate-900/90 rounded-3xl p-8 border border-slate-800 space-y-6 max-h-[75vh] overflow-y-auto">
+          <div className="bg-slate-900/90 rounded-3xl p-6 sm:p-8 border border-slate-800 space-y-6 max-h-[75vh] overflow-y-auto">
             <div className="flex items-center justify-between pb-4 border-b border-slate-800">
               <div className="flex items-center gap-3">
                 <Trophy className="w-8 h-8 text-amber-400" />
@@ -306,38 +311,26 @@ export const PresentationScreen: React.FC<PresentationScreenProps> = ({
           </div>
         ) : (
           /* QUESTION VIEW ON DIGITAL FLAT PANEL */
-          <div className="space-y-8">
+          <div className="space-y-4">
             {/* Question Meta Badge */}
             <div className="flex items-center justify-between">
-              <span className="font-heading font-black text-sm lg:text-base uppercase tracking-widest px-4 py-1.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+              <span className="font-heading font-black text-xs sm:text-sm uppercase tracking-widest px-3.5 py-1 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
                 QUESTION {currentQIndex + 1} OF {questions.length} • {currentQuestion?.marks} MARK{currentQuestion && currentQuestion.marks > 1 ? 'S' : ''}
               </span>
-              <span className="text-sm font-semibold text-slate-400">
+              <span className="text-xs sm:text-sm font-semibold text-slate-400">
                 {initialSession.subject}
               </span>
             </div>
 
-            {/* Huge Question Text */}
-            <h2 className="font-odia font-black text-2xl sm:text-4xl lg:text-5xl text-white leading-tight drop-shadow-md">
+            {/* Question Text */}
+            <h2 className="font-odia font-black text-xl sm:text-2xl lg:text-3xl text-white leading-snug drop-shadow-md notranslate" translate="no">
               {currentQuestion?.question}
             </h2>
 
-            {/* Answer Options Grid (Very Large Buttons for Touch Panels & Flat Panels) */}
+            {/* Answer Options Grid (Touch-Friendly Buttons for Flat Panels & Screens) */}
             {currentQuestion?.options && currentQuestion.options.length > 0 && (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 lg:gap-6 pt-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 sm:gap-4 pt-1">
                 {currentQuestion.options.map((opt, optIdx) => {
-                  const normalizedOpt = opt.trim().toLowerCase();
-                  const normalizedCorrect = (currentQuestion.correctAnswer || '').trim().toLowerCase();
-                  const optLetter = String.fromCharCode(65 + optIdx).toLowerCase();
-                  const isCorrect = (
-                    normalizedOpt === normalizedCorrect ||
-                    normalizedCorrect === optLetter ||
-                    normalizedCorrect.startsWith(optLetter + '.') ||
-                    normalizedCorrect.startsWith(optLetter + ')') ||
-                    normalizedCorrect.startsWith(`(${optLetter})`) ||
-                    normalizedOpt.includes(normalizedCorrect) ||
-                    normalizedCorrect.includes(normalizedOpt)
-                  );
                   const clickedStatus = clickedOptions[optIdx];
 
                   return (
@@ -345,17 +338,17 @@ export const PresentationScreen: React.FC<PresentationScreenProps> = ({
                       key={optIdx}
                       type="button"
                       onClick={() => handleOptionClick(opt, optIdx)}
-                      className={`p-6 rounded-3xl border-2 transition-all duration-300 flex items-center justify-between gap-4 cursor-pointer text-left active:scale-[0.99] select-none ${
-                        clickedStatus === 'correct' || (revealAnswer && isCorrect)
-                          ? 'bg-emerald-600 text-white border-emerald-400 shadow-2xl scale-[1.02] ring-4 ring-emerald-400/60'
+                      className={`p-3.5 sm:p-4 rounded-2xl border-2 transition-all duration-200 flex items-center justify-between gap-3 cursor-pointer text-left active:scale-[0.99] select-none ${
+                        clickedStatus === 'correct'
+                          ? 'bg-emerald-600 text-white border-emerald-400 shadow-xl ring-4 ring-emerald-400/50 scale-[1.01]'
                           : clickedStatus === 'wrong'
-                          ? 'bg-rose-950/80 border-rose-500 text-rose-200 ring-4 ring-rose-500/40 animate-shake'
+                          ? 'bg-rose-950/90 border-rose-500 text-white ring-4 ring-rose-500/40 shadow-xl scale-[1.01]'
                           : 'bg-slate-900/80 border-slate-800 hover:border-slate-600 hover:bg-slate-800/80 text-slate-200'
                       }`}
                     >
-                      <div className="flex items-center gap-4">
-                        <span className={`w-12 h-12 rounded-2xl flex items-center justify-center font-black text-xl shrink-0 transition-colors ${
-                          clickedStatus === 'correct' || (revealAnswer && isCorrect)
+                      <div className="flex items-center gap-3">
+                        <span className={`w-10 h-10 rounded-xl flex items-center justify-center font-black text-lg shrink-0 transition-colors ${
+                          clickedStatus === 'correct'
                             ? 'bg-white text-emerald-950 shadow-md'
                             : clickedStatus === 'wrong'
                             ? 'bg-rose-600 text-white'
@@ -363,21 +356,21 @@ export const PresentationScreen: React.FC<PresentationScreenProps> = ({
                         }`}>
                           {String.fromCharCode(65 + optIdx)}
                         </span>
-                        <span className="text-xl sm:text-2xl font-bold font-odia leading-snug">
+                        <span className="text-base sm:text-lg font-bold font-odia leading-snug notranslate" translate="no">
                           {opt}
                         </span>
                       </div>
 
                       <div className="shrink-0">
-                        {(clickedStatus === 'correct' || (revealAnswer && isCorrect)) && (
-                          <div className="px-3.5 py-1.5 rounded-xl bg-emerald-800 text-white text-sm font-black flex items-center gap-1.5">
-                            <CheckCircle2 className="w-5 h-5 text-emerald-200" />
+                        {clickedStatus === 'correct' && (
+                          <div className="px-3 py-1 rounded-xl bg-emerald-800 text-white text-xs sm:text-sm font-black flex items-center gap-1.5 shadow-sm">
+                            <CheckCircle2 className="w-4 h-4 text-emerald-200" />
                             <span>ସଠିକ୍ ଉତ୍ତର</span>
                           </div>
                         )}
                         {clickedStatus === 'wrong' && (
-                          <div className="px-3.5 py-1.5 rounded-xl bg-rose-600 text-white text-sm font-black flex items-center gap-1.5">
-                            <XCircle className="w-5 h-5 text-rose-200" />
+                          <div className="px-3 py-1 rounded-xl bg-rose-600 text-white text-xs sm:text-sm font-black flex items-center gap-1.5 shadow-sm">
+                            <XCircle className="w-4 h-4 text-rose-200" />
                             <span>ଭୁଲ୍ ଉତ୍ତର</span>
                           </div>
                         )}
@@ -388,23 +381,24 @@ export const PresentationScreen: React.FC<PresentationScreenProps> = ({
               </div>
             )}
 
-            {/* Flat Panel Feedback Banner */}
-            {lastFeedback && (
+            {/* Flat Panel Feedback & In-Depth Description Banner (Prominently Visible) */}
+            {lastFeedback ? (
               <div
-                className={`p-6 rounded-3xl border-2 transition-all duration-300 shadow-2xl ${
+                ref={feedbackRef}
+                className={`mt-2 p-5 rounded-3xl border-2 transition-all duration-300 shadow-2xl animate-in fade-in-50 ${
                   lastFeedback.isCorrect
-                    ? 'bg-emerald-950/90 border-emerald-500 text-white ring-4 ring-emerald-500/30'
-                    : 'bg-rose-950/90 border-rose-500 text-white ring-4 ring-rose-500/30'
+                    ? 'bg-emerald-950/95 border-emerald-500 text-white ring-4 ring-emerald-500/30'
+                    : 'bg-rose-950/95 border-rose-500 text-white ring-4 ring-rose-500/30'
                 }`}
               >
                 <div className="flex items-start gap-4">
                   {lastFeedback.isCorrect ? (
-                    <CheckCircle2 className="w-10 h-10 text-emerald-400 shrink-0" />
+                    <CheckCircle2 className="w-9 h-9 text-emerald-400 shrink-0 mt-0.5" />
                   ) : (
-                    <XCircle className="w-10 h-10 text-rose-400 shrink-0" />
+                    <XCircle className="w-9 h-9 text-rose-400 shrink-0 mt-0.5" />
                   )}
                   <div className="space-y-2 flex-1">
-                    <div className="flex items-center justify-between">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
                       <h4 className={`text-xl sm:text-2xl font-black font-odia uppercase tracking-wide ${
                         lastFeedback.isCorrect ? 'text-emerald-300' : 'text-rose-300'
                       }`}>
@@ -412,50 +406,54 @@ export const PresentationScreen: React.FC<PresentationScreenProps> = ({
                           ? '🎉 ସଠିକ୍ ଉତ୍ତର! (CORRECT ANSWER)'
                           : '❌ ଭୁଲ୍ ଉତ୍ତର! (INCORRECT ANSWER - PLEASE TRY AGAIN)'}
                       </h4>
-                      <span className="text-sm font-mono px-3 py-1 rounded-xl bg-white/10">
+                      <span className="text-xs sm:text-sm font-mono px-3 py-1 rounded-xl bg-white/10 font-bold">
                         OPTION {String.fromCharCode(65 + lastFeedback.optIndex)}
                       </span>
                     </div>
 
-                    <p className="text-lg font-bold text-slate-200">
-                      ବାଛିଥିବା ବିକଳ୍ପ: <span className="text-amber-300">{lastFeedback.text}</span>
+                    <p className="text-base sm:text-lg font-bold text-slate-200">
+                      ବାଛିଥିବା ବିକଳ୍ପ: <span className="text-amber-300 font-extrabold underline">{lastFeedback.text}</span>
                     </p>
 
-                    <div className="pt-2 border-t border-white/10 text-base sm:text-lg">
-                      <span className="font-bold block text-slate-300 mb-1">
-                        {lastFeedback.isCorrect ? 'ବିସ୍ତୃତ ବ୍ୟାଖ୍ୟା (Explanation):' : 'କାହିଁକି ଭୁଲ୍ (Why incorrect):'}
+                    <div className="pt-2 border-t border-white/15 text-sm sm:text-base space-y-1">
+                      <span className="font-bold block text-slate-300">
+                        {lastFeedback.isCorrect ? 'ଐତିହାସିକ ବ୍ୟାଖ୍ୟା (In-Depth Explanation):' : 'କାହିଁକି ଏହି ବିକଳ୍ପ ଭୁଲ୍ (Why this is incorrect):'}
                       </span>
-                      <p className="leading-relaxed text-slate-200 font-odia">
+                      <p className="leading-relaxed text-slate-100 font-odia font-normal">
                         {lastFeedback.explanation}
                       </p>
                     </div>
 
                     {!lastFeedback.isCorrect && (
-                      <p className="text-sm font-semibold text-rose-300 bg-rose-900/60 p-2.5 rounded-xl">
-                        💡 ଦୟାକରି ସଠିକ୍ ଉତ୍ତର ନମିଳିବା ପର୍ଯ୍ୟନ୍ତ ଅନ୍ୟ ବିକଳ୍ପ ଚୟନ କରନ୍ତୁ! (Please try other options!)
-                      </p>
+                      <div className="pt-1">
+                        <span className="text-xs sm:text-sm font-semibold text-rose-200 bg-rose-900/70 px-3 py-1.5 rounded-xl inline-flex items-center gap-1.5 border border-rose-700/60">
+                          💡 ଦୟାକରି ସଠିକ୍ ଉତ୍ତର ନମିଳିବା ପର୍ଯ୍ୟନ୍ତ ଅନ୍ୟ ବିକଳ୍ପ ଚୟନ କରନ୍ତୁ! (Please try other options until you find the right one!)
+                        </span>
+                      </div>
                     )}
                   </div>
                 </div>
               </div>
-            )}
+            ) : showDescription && currentQuestion?.explanationCorrect ? (
+              <div
+                ref={feedbackRef}
+                className="mt-2 p-5 rounded-3xl bg-amber-950/90 border-2 border-amber-500/70 text-amber-50 space-y-2 shadow-2xl animate-in fade-in-50"
+              >
+                <div className="flex items-center gap-2 font-bold text-amber-300 text-lg sm:text-xl">
+                  <Info className="w-6 h-6 text-amber-400" />
+                  <span>ବିସ୍ତୃତ ଐତିହାସିକ ବ୍ୟାଖ୍ୟା (In-Depth Explanation):</span>
+                </div>
+                <p className="leading-relaxed font-odia text-base sm:text-lg text-slate-100">
+                  {currentQuestion.explanationCorrect}
+                </p>
+              </div>
+            ) : null}
 
             {/* Model Answer if revealed for Short/Long */}
             {revealAnswer && currentQuestion?.modelAnswer && (
-              <div className="p-6 rounded-3xl bg-emerald-950/70 border-2 border-emerald-500/60 text-emerald-100 text-lg space-y-2">
-                <span className="font-bold text-amber-300 block text-base uppercase">ମଡେଲ ଉତ୍ତର (Model Answer):</span>
+              <div className="p-5 rounded-3xl bg-emerald-950/70 border-2 border-emerald-500/60 text-emerald-100 text-base sm:text-lg space-y-2">
+                <span className="font-bold text-amber-300 block text-sm uppercase">ମଡେଲ ଉତ୍ତର (Model Answer):</span>
                 <p className="leading-relaxed font-odia">{currentQuestion.modelAnswer}</p>
-              </div>
-            )}
-
-            {/* In-depth Explanation Banner if triggered */}
-            {showDescription && (
-              <div className="p-6 rounded-3xl bg-amber-950/60 border-2 border-amber-500/60 text-amber-100 text-base sm:text-lg space-y-2 animate-in fade-in-50">
-                <div className="flex items-center gap-2 font-bold text-amber-300">
-                  <Info className="w-5 h-5" />
-                  <span>ବିସ୍ତୃତ ଐତିହାସିକ ବ୍ୟାଖ୍ୟା (In-Depth Explanation):</span>
-                </div>
-                <p className="leading-relaxed font-odia">{currentQuestion?.explanationCorrect}</p>
               </div>
             )}
           </div>
@@ -463,9 +461,9 @@ export const PresentationScreen: React.FC<PresentationScreenProps> = ({
       </div>
 
       {/* Bottom Podium: Top 3 Hand Raises displayed prominently for classroom */}
-      <div className="bg-slate-900/90 backdrop-blur-md px-6 py-4 border-t border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-4">
+      <div className="bg-slate-900/90 backdrop-blur-md px-6 py-3 border-t border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-4 shrink-0">
         <div className="flex items-center gap-2">
-          <Flame className="w-5 h-5 text-amber-400" />
+          <Flame className="w-4 h-4 text-amber-400" />
           <span className="font-bold text-xs uppercase text-slate-400">
             ପ୍ରଥମ ୩ ପ୍ରତିଯୋଗୀ (Top 3 Raised Hands):
           </span>
@@ -475,15 +473,15 @@ export const PresentationScreen: React.FC<PresentationScreenProps> = ({
           {handRaises.slice(0, 3).map((hr) => (
             <div
               key={hr.rollNo}
-              className={`px-4 py-2 rounded-2xl flex items-center gap-2.5 border ${
+              className={`px-3 py-1.5 rounded-xl flex items-center gap-2 border text-xs ${
                 hr.rank === 1 ? 'bg-amber-400 text-slate-950 font-black border-amber-300 shadow-md' :
                 hr.rank === 2 ? 'bg-slate-300 text-slate-900 font-bold border-slate-200' :
                 'bg-amber-700 text-white font-bold border-amber-600'
               }`}
             >
-              <Medal className="w-4 h-4" />
-              <span className="text-xs">Rank #{hr.rank}</span>
-              <span className="text-xs font-bold">{hr.name}</span>
+              <Medal className="w-3.5 h-3.5" />
+              <span>Rank #{hr.rank}</span>
+              <span className="font-bold">{hr.name}</span>
               <span className="text-[10px] opacity-75 font-mono">({hr.rollNo})</span>
             </div>
           ))}

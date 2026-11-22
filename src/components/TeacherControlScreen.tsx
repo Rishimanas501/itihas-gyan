@@ -95,10 +95,9 @@ export const TeacherControlScreen: React.FC<TeacherControlScreenProps> = ({
 
     const unsubOptionClicked = realtimeService.on('option_clicked', (data: any) => {
       if (data && data.optIndex !== undefined) {
-        setClickedOptions(prev => ({
-          ...prev,
+        setClickedOptions({
           [data.optIndex]: data.isCorrect ? 'correct' : 'wrong'
-        }));
+        });
         setLastFeedback({
           isCorrect: data.isCorrect,
           text: data.optionText,
@@ -222,10 +221,9 @@ export const TeacherControlScreen: React.FC<TeacherControlScreenProps> = ({
       }
     }
 
-    setClickedOptions(prev => ({
-      ...prev,
+    setClickedOptions({
       [optIdx]: isCorrect ? 'correct' : 'wrong'
-    }));
+    });
 
     setLastFeedback({
       isCorrect,
@@ -447,7 +445,7 @@ export const TeacherControlScreen: React.FC<TeacherControlScreenProps> = ({
                         type="button"
                         onClick={() => handleOptionClick(opt, optIdx)}
                         className={`p-3.5 rounded-2xl border-2 text-left font-medium transition-all flex items-center justify-between gap-3 cursor-pointer select-none active:scale-[0.98] ${
-                          clickedStatus === 'correct' || (revealAnswer && isCorrect)
+                          clickedStatus === 'correct'
                             ? 'bg-emerald-600 text-white border-emerald-500 shadow-lg ring-4 ring-emerald-300/60 scale-[1.01]'
                             : clickedStatus === 'wrong'
                             ? 'bg-rose-50 text-rose-950 border-rose-500 ring-2 ring-rose-300 shadow-xs animate-shake'
@@ -456,7 +454,7 @@ export const TeacherControlScreen: React.FC<TeacherControlScreenProps> = ({
                       >
                         <div className="flex items-center gap-3">
                           <span className={`w-7 h-7 rounded-full flex items-center justify-center font-bold text-xs shrink-0 transition-colors ${
-                            clickedStatus === 'correct' || (revealAnswer && isCorrect)
+                            clickedStatus === 'correct'
                               ? 'bg-white text-emerald-900 shadow-xs'
                               : clickedStatus === 'wrong'
                               ? 'bg-rose-600 text-white'
@@ -468,14 +466,14 @@ export const TeacherControlScreen: React.FC<TeacherControlScreenProps> = ({
                         </div>
 
                         <div className="shrink-0">
-                          {(clickedStatus === 'correct' || (revealAnswer && isCorrect)) && (
-                            <span className="px-2 py-0.5 rounded-lg bg-emerald-700 text-white text-[11px] font-black flex items-center gap-1">
+                          {clickedStatus === 'correct' && (
+                            <span className="px-2 py-0.5 rounded-lg bg-emerald-700 text-white text-[11px] font-black flex items-center gap-1 shadow-xs">
                               <CheckCircle2 className="w-3.5 h-3.5 text-emerald-200" />
                               <span>ସଠିକ୍</span>
                             </span>
                           )}
                           {clickedStatus === 'wrong' && (
-                            <span className="px-2 py-0.5 rounded-lg bg-rose-600 text-white text-[11px] font-black flex items-center gap-1">
+                            <span className="px-2 py-0.5 rounded-lg bg-rose-600 text-white text-[11px] font-black flex items-center gap-1 shadow-xs">
                               <XCircle className="w-3.5 h-3.5 text-rose-200" />
                               <span>ଭୁଲ୍</span>
                             </span>
