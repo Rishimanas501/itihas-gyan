@@ -12,7 +12,9 @@ import {
   HelpCircle,
   Info,
   Medal,
-  Flame
+  Flame,
+  CheckCircle2,
+  XCircle
 } from 'lucide-react';
 import { BrandHeader } from './BrandHeader';
 import type { Question, QuizSession, HandRaiseRecord } from '../types';
@@ -38,6 +40,15 @@ export const PresentationScreen: React.FC<PresentationScreenProps> = ({
   const [showLeaderboard, setShowLeaderboard] = useState(false);
   const [leaderboard, setLeaderboard] = useState<any[]>([]);
 
+  // Interactive option click state on presentation screen
+  const [clickedOptions, setClickedOptions] = useState<{ [index: number]: 'correct' | 'wrong' }>({});
+  const [lastFeedback, setLastFeedback] = useState<{
+    isCorrect: boolean;
+    text: string;
+    explanation: string;
+    optIndex: number;
+  } | null>(null);
+
   const currentQuestion: Question | undefined = questions[currentQIndex];
 
   // Listen to realtime updates from teacher controls
@@ -48,12 +59,32 @@ export const PresentationScreen: React.FC<PresentationScreenProps> = ({
         if (data.revealAnswer !== undefined) setRevealAnswer(data.revealAnswer);
         if (data.showDescription !== undefined) setShowDescription(data.showDescription);
         setHandRaises([]);
+        setClickedOptions({});
+        setLastFeedback(null);
       }
     });
 
     const unsubReveal = realtimeService.on('answer_revealed', (data: any) => {
       if (data && data.revealAnswer !== undefined) {
         setRevealAnswer(data.revealAnswer);
+      }
+    });
+
+    const unsubOption = realtimeService.on('option_clicked', (data: any) => {
+      if (data && data.optIndex !== undefined) {
+        setClickedOptions(prev => ({
+          ...prev,
+          [data.optIndex]: data.isCorrect ? 'correct' : 'wrong'
+        }));
+        setLastFeedback({
+          isCorrect: data.isCorrect,
+          text: data.optionText,
+          explanation: data.explanation,
+          optIndex: data.optIndex
+        });
+        if (data.isCorrect) {
+          setRevealAnswer(true);
+        }
       }
     });
 
@@ -84,12 +115,61 @@ export const PresentationScreen: React.FC<PresentationScreenProps> = ({
     return () => {
       unsubQ();
       unsubReveal();
+      unsubOption();
       unsubDesc();
       unsubHands();
       unsubStudents();
       unsubLeaderboard();
     };
   }, []);
+
+  const handleOptionClick = (opt: string, optIdx: number) => {
+    if (!currentQuestion) return;
+
+    const normalizedOpt = opt.trim().toLowerCase();
+    const normalizedCorrect = (currentQuestion.correctAnswer || '').trim().toLowerCase();
+    const optLetter = String.fromCharCode(65 + optIdx).toLowerCase();
+
+    const isCorrect = (
+      normalizedOpt === normalizedCorrect ||
+      normalizedCorrect === optLetter ||
+      normalizedCorrect.startsWith(optLetter + '.') ||
+      normalizedCorrect.startsWith(optLetter + ')') ||
+      normalizedCorrect.startsWith(`(${optLetter})`) ||
+      normalizedOpt.includes(normalizedCorrect) ||
+      normalizedCorrect.includes(normalizedOpt)
+    );
+
+    let explanation = '';
+    if (isCorrect) {
+      explanation = currentQuestion.explanationCorrect || 
+        `ଏହା ସମ୍ପୂର୍ଣ୍ଣ ସଠିକ୍ ଉତ୍ତର ଅଟେ। ପ୍ରଦତ୍ତ ଐତିହାସିକ ତଥ୍ୟ ଅନୁସାରେ "${opt}" ସଠିକ୍। (Correct answer!)`;
+    } else {
+      if (currentQuestion.explanationIncorrect && currentQuestion.explanationIncorrect[optIdx]) {
+        explanation = currentQuestion.explanationIncorrect[optIdx];
+      } else {
+        explanation = `"${opt}" ଏହି ପ୍ରଶ୍ନ ପାଇଁ ଭୁଲ୍ ବିକଳ୍ପ ଅଟେ। ଦୟାକରି ଅନ୍ୟ ବିକଳ୍ପ ଚେଷ୍ଟା କରନ୍ତୁ! (Incorrect option. Please try another option!)`;
+      }
+    }
+
+    setClickedOptions(prev => ({
+      ...prev,
+      [optIdx]: isCorrect ? 'correct' : 'wrong'
+    }));
+
+    setLastFeedback({
+      isCorrect,
+      text: opt,
+      explanation,
+      optIndex: optIdx
+    });
+
+    if (isCorrect) {
+      setRevealAnswer(true);
+    }
+
+    realtimeService.clickOption(initialSession.pin, optIdx, opt, isCorrect, explanation);
+  };
 
   const toggleFullscreen = () => {
     if (!document.fullscreenElement) {
@@ -242,36 +322,121 @@ export const PresentationScreen: React.FC<PresentationScreenProps> = ({
               {currentQuestion?.question}
             </h2>
 
-            {/* Answer Options Grid (Very Large Buttons for Touch Panels) */}
+            {/* Answer Options Grid (Very Large Buttons for Touch Panels & Flat Panels) */}
             {currentQuestion?.options && currentQuestion.options.length > 0 && (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 lg:gap-6 pt-4">
                 {currentQuestion.options.map((opt, optIdx) => {
-                  const isCorrect = opt === currentQuestion.correctAnswer;
+                  const normalizedOpt = opt.trim().toLowerCase();
+                  const normalizedCorrect = (currentQuestion.correctAnswer || '').trim().toLowerCase();
+                  const optLetter = String.fromCharCode(65 + optIdx).toLowerCase();
+                  const isCorrect = (
+                    normalizedOpt === normalizedCorrect ||
+                    normalizedCorrect === optLetter ||
+                    normalizedCorrect.startsWith(optLetter + '.') ||
+                    normalizedCorrect.startsWith(optLetter + ')') ||
+                    normalizedCorrect.startsWith(`(${optLetter})`) ||
+                    normalizedOpt.includes(normalizedCorrect) ||
+                    normalizedCorrect.includes(normalizedOpt)
+                  );
+                  const clickedStatus = clickedOptions[optIdx];
+
                   return (
-                    <div
+                    <button
                       key={optIdx}
-                      className={`p-6 rounded-3xl border-2 transition-all duration-300 flex items-center gap-4 ${
-                        revealAnswer && isCorrect
-                          ? 'bg-emerald-600/95 text-white border-emerald-400 shadow-2xl scale-[1.02] ring-4 ring-emerald-400/50'
-                          : revealAnswer && !isCorrect
-                          ? 'bg-slate-900/40 border-slate-800 text-slate-500 opacity-60'
-                          : 'bg-slate-900/80 border-slate-800 hover:border-slate-700 text-slate-200'
+                      type="button"
+                      onClick={() => handleOptionClick(opt, optIdx)}
+                      className={`p-6 rounded-3xl border-2 transition-all duration-300 flex items-center justify-between gap-4 cursor-pointer text-left active:scale-[0.99] select-none ${
+                        clickedStatus === 'correct' || (revealAnswer && isCorrect)
+                          ? 'bg-emerald-600 text-white border-emerald-400 shadow-2xl scale-[1.02] ring-4 ring-emerald-400/60'
+                          : clickedStatus === 'wrong'
+                          ? 'bg-rose-950/80 border-rose-500 text-rose-200 ring-4 ring-rose-500/40 animate-shake'
+                          : 'bg-slate-900/80 border-slate-800 hover:border-slate-600 hover:bg-slate-800/80 text-slate-200'
                       }`}
                     >
-                      <span className={`w-12 h-12 rounded-2xl flex items-center justify-center font-black text-xl shrink-0 ${
-                        revealAnswer && isCorrect ? 'bg-white text-emerald-900 shadow-md' : 'bg-slate-800 text-slate-300'
-                      }`}>
-                        {String.fromCharCode(65 + optIdx)}
-                      </span>
-                      <span className="text-xl sm:text-2xl font-bold font-odia leading-snug">
-                        {opt}
-                      </span>
-                      {revealAnswer && isCorrect && (
-                        <Check className="w-8 h-8 ml-auto text-white stroke-[3.5]" />
-                      )}
-                    </div>
+                      <div className="flex items-center gap-4">
+                        <span className={`w-12 h-12 rounded-2xl flex items-center justify-center font-black text-xl shrink-0 transition-colors ${
+                          clickedStatus === 'correct' || (revealAnswer && isCorrect)
+                            ? 'bg-white text-emerald-950 shadow-md'
+                            : clickedStatus === 'wrong'
+                            ? 'bg-rose-600 text-white'
+                            : 'bg-slate-800 text-slate-300'
+                        }`}>
+                          {String.fromCharCode(65 + optIdx)}
+                        </span>
+                        <span className="text-xl sm:text-2xl font-bold font-odia leading-snug">
+                          {opt}
+                        </span>
+                      </div>
+
+                      <div className="shrink-0">
+                        {(clickedStatus === 'correct' || (revealAnswer && isCorrect)) && (
+                          <div className="px-3.5 py-1.5 rounded-xl bg-emerald-800 text-white text-sm font-black flex items-center gap-1.5">
+                            <CheckCircle2 className="w-5 h-5 text-emerald-200" />
+                            <span>ସଠିକ୍ ଉତ୍ତର</span>
+                          </div>
+                        )}
+                        {clickedStatus === 'wrong' && (
+                          <div className="px-3.5 py-1.5 rounded-xl bg-rose-600 text-white text-sm font-black flex items-center gap-1.5">
+                            <XCircle className="w-5 h-5 text-rose-200" />
+                            <span>ଭୁଲ୍ ଉତ୍ତର</span>
+                          </div>
+                        )}
+                      </div>
+                    </button>
                   );
                 })}
+              </div>
+            )}
+
+            {/* Flat Panel Feedback Banner */}
+            {lastFeedback && (
+              <div
+                className={`p-6 rounded-3xl border-2 transition-all duration-300 shadow-2xl ${
+                  lastFeedback.isCorrect
+                    ? 'bg-emerald-950/90 border-emerald-500 text-white ring-4 ring-emerald-500/30'
+                    : 'bg-rose-950/90 border-rose-500 text-white ring-4 ring-rose-500/30'
+                }`}
+              >
+                <div className="flex items-start gap-4">
+                  {lastFeedback.isCorrect ? (
+                    <CheckCircle2 className="w-10 h-10 text-emerald-400 shrink-0" />
+                  ) : (
+                    <XCircle className="w-10 h-10 text-rose-400 shrink-0" />
+                  )}
+                  <div className="space-y-2 flex-1">
+                    <div className="flex items-center justify-between">
+                      <h4 className={`text-xl sm:text-2xl font-black font-odia uppercase tracking-wide ${
+                        lastFeedback.isCorrect ? 'text-emerald-300' : 'text-rose-300'
+                      }`}>
+                        {lastFeedback.isCorrect
+                          ? '🎉 ସଠିକ୍ ଉତ୍ତର! (CORRECT ANSWER)'
+                          : '❌ ଭୁଲ୍ ଉତ୍ତର! (INCORRECT ANSWER - PLEASE TRY AGAIN)'}
+                      </h4>
+                      <span className="text-sm font-mono px-3 py-1 rounded-xl bg-white/10">
+                        OPTION {String.fromCharCode(65 + lastFeedback.optIndex)}
+                      </span>
+                    </div>
+
+                    <p className="text-lg font-bold text-slate-200">
+                      ବାଛିଥିବା ବିକଳ୍ପ: <span className="text-amber-300">{lastFeedback.text}</span>
+                    </p>
+
+                    <div className="pt-2 border-t border-white/10 text-base sm:text-lg">
+                      <span className="font-bold block text-slate-300 mb-1">
+                        {lastFeedback.isCorrect ? 'ବିସ୍ତୃତ ବ୍ୟାଖ୍ୟା (Explanation):' : 'କାହିଁକି ଭୁଲ୍ (Why incorrect):'}
+                      </span>
+                      <p className="leading-relaxed text-slate-200 font-odia">
+                        {lastFeedback.explanation}
+                      </p>
+                    </div>
+
+                    {!lastFeedback.isCorrect && (
+                      <p className="text-sm font-semibold text-rose-300 bg-rose-900/60 p-2.5 rounded-xl">
+                        💡 ଦୟାକରି ସଠିକ୍ ଉତ୍ତର ନମିଳିବା ପର୍ଯ୍ୟନ୍ତ ଅନ୍ୟ ବିକଳ୍ପ ଚୟନ କରନ୍ତୁ! (Please try other options!)
+                      </p>
+                    )}
+                  </div>
+                </div>
               </div>
             )}
 

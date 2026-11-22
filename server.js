@@ -230,6 +230,20 @@ io.on('connection', (socket) => {
     io.to(`session_${pin}`).emit('answer_revealed', { revealAnswer: reveal });
   });
 
+  // INTERACTIVE OPTION CLICK (Real-time option evaluation & explanation feedback)
+  socket.on('client_click_option', ({ pin, optIndex, optionText, isCorrect, explanation }) => {
+    const session = activeSessions.get(String(pin).trim());
+    if (session && isCorrect) {
+      session.revealAnswer = true;
+    }
+    io.to(`session_${pin}`).emit('option_clicked', {
+      optIndex,
+      optionText,
+      isCorrect,
+      explanation
+    });
+  });
+
   // TEACHER toggles description / explanation
   socket.on('teacher_show_description', ({ pin, show }) => {
     const session = activeSessions.get(String(pin).trim());

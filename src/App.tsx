@@ -246,6 +246,7 @@ export function App() {
             onBack={handleBack}
             geminiApiKey={settings?.geminiApiKey}
             onNavigateToBank={() => navigateTo('question_bank')}
+            onStartLiveQuizWithQuestions={(qs) => startLiveQuiz(qs)}
           />
         )}
 

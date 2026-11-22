@@ -130,6 +130,13 @@ class ClassroomRealtimeService {
     this.broadcastLocal('description_toggled', { pin, showDescription: show });
   }
 
+  public clickOption(pin: string, optIndex: number, optionText: string, isCorrect: boolean, explanation: string): void {
+    if (this.socket && this.socket.connected) {
+      this.socket.emit('client_click_option', { pin, optIndex, optionText, isCorrect, explanation });
+    }
+    this.broadcastLocal('option_clicked', { pin, optIndex, optionText, isCorrect, explanation });
+  }
+
   public awardMarks(pin: string, rollNo: string, name: string, questionIndex: number, marks: number, markingStatus: any): void {
     if (this.socket && this.socket.connected) {
       this.socket.emit('teacher_award_marks', { pin, rollNo, name, questionIndex, marks, markingStatus });

@@ -14,7 +14,13 @@ export interface GenerateOptions {
 }
 
 export async function generateQuestionsFromSource(options: GenerateOptions): Promise<Question[]> {
-  const { apiKey } = options;
+  const { apiKey, text } = options;
+
+  // Check if user directly pasted formatted/structured questions (MCQs, True/False, Blanks, Q&A)
+  const directlyParsed = parseAndConvertPastedText(text, options);
+  if (directlyParsed && directlyParsed.length > 0) {
+    return directlyParsed;
+  }
 
   // If Gemini API Key is provided, use Google Gemini API
   if (apiKey && apiKey.trim().length > 10) {
@@ -30,6 +36,261 @@ export async function generateQuestionsFromSource(options: GenerateOptions): Pro
 
   // Use Intelligent Offline Rule-Based Historical Generator
   return generateOfflineHistoryQuestions(options);
+}
+
+/**
+ * Universal Smart Question Parser & Auto-Converter
+ * Automatically analyzes any pasted questions (MCQ, Fill in the Blanks, True/False, One-Word, Short Q&A)
+ * whether in Odia, English, or mixed format, extracts options, correct answers, and generates missing explanations.
+ */
+export function parseAndConvertPastedText(rawText: string, meta: Partial<Question>): Question[] {
+  if (!rawText || !rawText.trim()) return [];
+
+  const text = rawText.trim();
+  const now = new Date().toISOString();
+  const questions: Question[] = [];
+
+  // Split text into question blocks based on standard question delimiters
+  // Patterns: "1.", "1)", "Q1:", "Q.1", "Question 1:", "୧.", "୨.", "ପ୍ରଶ୍ନ ୧:", etc.
+  const blockDelimRegex = /(?:^|\n+)(?=(?:(?:Q(?:uestion|\.|\:)?\s*[\d୧-୯]+)|(?:[\d୧-୯]+[\.\)\-]))|(?:ପ୍ରଶ୍ନ\s*[\d୧-୯]+[\.\:\-]))/i;
+  
+  let rawBlocks = text.split(blockDelimRegex).map(b => b.trim()).filter(b => b.length > 0);
+
+  // If no numbered delimiters found, attempt splitting by double newlines
+  if (rawBlocks.length <= 1) {
+    const doubleNewlineBlocks = text.split(/\n\s*\n/).map(b => b.trim()).filter(b => b.length > 15);
+    if (doubleNewlineBlocks.length > 1) {
+      rawBlocks = doubleNewlineBlocks;
+    }
+  }
+
+  // Fallback: If still single block, treat as single question block
+  if (rawBlocks.length === 0 && text.length > 5) {
+    rawBlocks = [text];
+  }
+
+  for (let i = 0; i < rawBlocks.length; i++) {
+    const block = rawBlocks[i];
+    const parsedQ = parseSingleQuestionBlock(block, i + 1, meta, now);
+    if (parsedQ) {
+      questions.push(parsedQ);
+    }
+  }
+
+  return questions;
+}
+
+function parseSingleQuestionBlock(block: string, index: number, meta: Partial<Question>, now: string): Question | null {
+  const lines = block.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+  if (lines.length === 0) return null;
+
+  // Extract Question text, options, answer, and explanation
+  let questionText = '';
+  const options: string[] = [];
+  let answerStr = '';
+  let explanationStr = '';
+  let incorrectExplanations: string[] = [];
+  let pattern: QuestionPattern = 'mcq';
+  let marks = 1;
+
+  // Regex patterns
+  const ansRegex = /^(?:Ans(?:wer)?|ଉତ୍ତର|ସଠିକ୍\s*ଉତ୍ତର|Correct(?:\s*Ans(?:wer)?)?)\s*[\:\-\=]\s*(.+)$/i;
+  const expRegex = /^(?:Exp(?:lanation)?|ବ୍ୟାଖ୍ୟା|Reason|ତଥ୍ୟ)\s*[\:\-\=]\s*(.+)$/i;
+  
+  // Option prefixes: (A), (B), A., A), [A], a., (କ), (ଖ), (1), 1., etc.
+  const optLineRegex = /^(?:\(([A-Da-dକ-ଘ1-4])\)|([A-Da-dକ-ଘ1-4])[\.\)\-]|\b([A-Da-d])\s*[\:\-])\s*(.+)$/;
+
+  // Check inline options: e.g. "A) Apple B) Banana C) Cherry D) Date" or "(A) ... (B) ... (C) ... (D) ..."
+  const inlineOptRegex = /(?:\(([A-Da-dକ-ଘ1-4])\)|(?:\b|\s)([A-Da-dକ-ଘ])[\.\)\-])\s*([^(\n]+?)(?=(?:\([A-Da-dକ-ଘ1-4]\)|(?:\b|\s)[A-Da-dକ-ଘ][\.\)\-])|$)/g;
+
+  let parsingOptions = false;
+
+  for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+    const line = lines[lineIdx];
+
+    // Check Answer line
+    const ansMatch = line.match(ansRegex);
+    if (ansMatch) {
+      answerStr = ansMatch[1].trim();
+      continue;
+    }
+
+    // Check Explanation line
+    const expMatch = line.match(expRegex);
+    if (expMatch) {
+      explanationStr = expMatch[1].trim();
+      continue;
+    }
+
+    // Check Option line
+    const optMatch = line.match(optLineRegex);
+    if (optMatch) {
+      parsingOptions = true;
+      const optVal = optMatch[4].trim();
+      options.push(optVal);
+      continue;
+    }
+
+    // If we are not parsing options yet, check if this line contains inline options
+    if (!parsingOptions && options.length === 0) {
+      const inlineMatches = Array.from(line.matchAll(inlineOptRegex));
+      if (inlineMatches.length >= 2) {
+        parsingOptions = true;
+        // The text before the first option is part of question
+        const firstMatchIndex = inlineMatches[0].index || 0;
+        const qPrefix = line.substring(0, firstMatchIndex).trim();
+        if (qPrefix) {
+          questionText += (questionText ? ' ' : '') + qPrefix;
+        }
+        for (const match of inlineMatches) {
+          options.push(match[3].trim());
+        }
+        continue;
+      }
+    }
+
+    // If options are already found or explanation continues
+    if (explanationStr && !line.match(ansRegex)) {
+      explanationStr += ' ' + line;
+      continue;
+    }
+
+    // Otherwise, it is question text
+    if (!parsingOptions) {
+      questionText += (questionText ? '\n' : '') + line;
+    }
+  }
+
+  // Clean Question text: Remove leading question numbering like "1.", "Q1:", "୧."
+  questionText = questionText.replace(/^(?:(?:Q(?:uestion|\.|\:)?\s*[\d୧-୯]+[\.\:\-]?)|(?:[\d୧-୯]+[\.\)\-]))\s*/i, '').trim();
+  questionText = questionText.replace(/^ପ୍ରଶ୍ନ\s*[\d୧-୯]+[\.\:\-]?\s*/i, '').trim();
+
+  // If question text is empty, fallback to first line
+  if (!questionText && lines.length > 0) {
+    questionText = lines[0];
+  }
+
+  // Determine Pattern
+  const lowerQ = questionText.toLowerCase();
+  const lowerAns = answerStr.toLowerCase();
+
+  const isTrueFalseIndic = (
+    lowerQ.includes('true/false') || 
+    lowerQ.includes('(true / false)') ||
+    lowerQ.includes('true or false') ||
+    questionText.includes('ସତ୍ୟ / ମିଥ୍ୟା') ||
+    questionText.includes('ସତ୍ୟ/ମିଥ୍ୟା') ||
+    lowerAns === 'true' || 
+    lowerAns === 'false' ||
+    answerStr === 'ସତ୍ୟ' ||
+    answerStr === 'ମିଥ୍ୟା'
+  );
+
+  const isBlankIndic = (
+    questionText.includes('____') || 
+    questionText.includes('.....') ||
+    lowerQ.includes('fill in the blank') ||
+    questionText.includes('ଶୂନ୍ୟସ୍ଥାନ')
+  );
+
+  if (isTrueFalseIndic) {
+    pattern = 'true_false';
+    marks = 1;
+    if (options.length === 0) {
+      options.push('ସତ୍ୟ (True)', 'ମିଥ୍ୟା (False)');
+    }
+  } else if (isBlankIndic && options.length === 0) {
+    pattern = 'blanks';
+    marks = 1;
+  } else if (options.length >= 2) {
+    pattern = 'mcq';
+    marks = 1;
+  } else if (answerStr && (answerStr.length > 100 || questionText.toLowerCase().includes('discuss') || questionText.toLowerCase().includes('explain'))) {
+    pattern = 'short';
+    marks = 2;
+  } else if (answerStr && answerStr.length <= 40) {
+    pattern = 'one_word';
+    marks = 1;
+  } else {
+    pattern = meta.pattern || 'mcq';
+  }
+
+  // Resolve Correct Answer
+  let resolvedCorrect = '';
+  if (pattern === 'true_false') {
+    if (lowerAns.includes('true') || answerStr.includes('ସତ୍ୟ')) {
+      resolvedCorrect = options.find(o => o.includes('True') || o.includes('ସତ୍ୟ')) || 'ସତ୍ୟ (True)';
+    } else {
+      resolvedCorrect = options.find(o => o.includes('False') || o.includes('ମିଥ୍ୟା')) || 'ମିଥ୍ୟା (False)';
+    }
+  } else if (options.length > 0) {
+    // If answerStr specified letter e.g. "A", "(B)", "C", "କ", "ଖ", "1", "2"
+    const letterMatch = answerStr.match(/^\(?([A-Da-dକ-ଘ1-4])\)?$/);
+    if (letterMatch) {
+      const char = letterMatch[1].toUpperCase();
+      let optIdx = -1;
+      if (char === 'A' || char === '1' || char === 'କ') optIdx = 0;
+      else if (char === 'B' || char === '2' || char === 'ଖ') optIdx = 1;
+      else if (char === 'C' || char === '3' || char === 'ଗ') optIdx = 2;
+      else if (char === 'D' || char === '4' || char === 'ଘ') optIdx = 3;
+
+      if (optIdx >= 0 && optIdx < options.length) {
+        resolvedCorrect = options[optIdx];
+      }
+    }
+
+    // If still not matched, check if answer matches text of one of options
+    if (!resolvedCorrect && answerStr) {
+      const match = options.find(o => 
+        o.toLowerCase().trim() === answerStr.toLowerCase().trim() ||
+        answerStr.toLowerCase().includes(o.toLowerCase().trim()) ||
+        o.toLowerCase().includes(answerStr.toLowerCase().trim())
+      );
+      if (match) {
+        resolvedCorrect = match;
+      }
+    }
+
+    // Fallback: If no answer was specified, select first option
+    if (!resolvedCorrect) {
+      resolvedCorrect = options[0];
+    }
+  } else {
+    resolvedCorrect = answerStr || 'ସଠିକ୍ ଉତ୍ତର ଅନୁପଲବ୍ଧ (Answer not specified)';
+  }
+
+  // Build Explanations
+  let explanationCorrect = explanationStr;
+  if (!explanationCorrect) {
+    explanationCorrect = `ଐତିହାସିକ ତଥ୍ୟ ଓ ପାଠ୍ୟାଂଶ ଅନୁସାରେ "${resolvedCorrect}" ଏହି ପ୍ରଶ୍ନର ସମ୍ପୂର୍ଣ୍ଣ ସଠିକ୍ ଉତ୍ତର ଅଟେ। (According to historical records, "${resolvedCorrect}" is the verified correct answer.)`;
+  }
+
+  if (options.length > 0) {
+    incorrectExplanations = options.map((opt) => {
+      if (opt === resolvedCorrect) return '';
+      return `"${opt}" ଏହି ପ୍ରଶ୍ନ ପାଇଁ ଭୁଲ୍ ବିକଳ୍ପ ଅଟେ ଏବଂ ପ୍ରଦତ୍ତ ଐତିହାସିକ ଘଟଣା ସହ ମେଳ ଖାଉନାହିଁ। (Incorrect option for this historical context.)`;
+    }).filter(e => e.length > 0);
+  }
+
+  return {
+    question: questionText,
+    pattern,
+    marks,
+    options: options.length > 0 ? options : undefined,
+    correctAnswer: resolvedCorrect,
+    explanationCorrect,
+    explanationIncorrect: incorrectExplanations.length > 0 ? incorrectExplanations : undefined,
+    modelAnswer: pattern === 'short' || pattern === 'long' ? (answerStr || explanationStr) : undefined,
+    subject: meta.subject || 'History of Odisha',
+    department: meta.department || 'History',
+    semester: meta.semester || '4th Semester',
+    paper: meta.paper || 'Core Paper VII',
+    topic: meta.topic || 'Classroom Evaluation',
+    language: meta.language || 'bilingual',
+    approved: true, // auto-ready for live quiz
+    createdAt: now,
+    updatedAt: now
+  };
 }
 
 // Intelligent Offline Fallback Generator

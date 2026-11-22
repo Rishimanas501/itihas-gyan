@@ -61,6 +61,15 @@ export const TeacherControlScreen: React.FC<TeacherControlScreenProps> = ({
   const [isQrModalOpen, setIsQrModalOpen] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
 
+  // Interactive Option Click Feedback state
+  const [clickedOptions, setClickedOptions] = useState<{ [index: number]: 'correct' | 'wrong' }>({});
+  const [lastFeedback, setLastFeedback] = useState<{
+    isCorrect: boolean;
+    text: string;
+    explanation: string;
+    optIndex: number;
+  } | null>(null);
+
   // Question currently displayed
   const currentQuestion: Question | undefined = questions[currentQIndex];
 
@@ -84,9 +93,28 @@ export const TeacherControlScreen: React.FC<TeacherControlScreenProps> = ({
       }
     });
 
+    const unsubOptionClicked = realtimeService.on('option_clicked', (data: any) => {
+      if (data && data.optIndex !== undefined) {
+        setClickedOptions(prev => ({
+          ...prev,
+          [data.optIndex]: data.isCorrect ? 'correct' : 'wrong'
+        }));
+        setLastFeedback({
+          isCorrect: data.isCorrect,
+          text: data.optionText,
+          explanation: data.explanation,
+          optIndex: data.optIndex
+        });
+        if (data.isCorrect) {
+          setRevealAnswer(true);
+        }
+      }
+    });
+
     return () => {
       unsubHandRaises();
       unsubStudents();
+      unsubOptionClicked();
     };
   }, [session.pin]);
 
@@ -117,6 +145,8 @@ export const TeacherControlScreen: React.FC<TeacherControlScreenProps> = ({
       setSelectedStudent(null);
       setTimerRemaining(timerDuration);
       setIsTimerRunning(false);
+      setClickedOptions({});
+      setLastFeedback(null);
 
       realtimeService.changeQuestion(session.pin, nextIndex);
     }
@@ -132,6 +162,8 @@ export const TeacherControlScreen: React.FC<TeacherControlScreenProps> = ({
       setSelectedStudent(null);
       setTimerRemaining(timerDuration);
       setIsTimerRunning(false);
+      setClickedOptions({});
+      setLastFeedback(null);
 
       realtimeService.changeQuestion(session.pin, prevIndex);
     }
@@ -156,7 +188,57 @@ export const TeacherControlScreen: React.FC<TeacherControlScreenProps> = ({
     setSelectedStudent(null);
     setTimerRemaining(timerDuration);
     setIsTimerRunning(false);
+    setClickedOptions({});
+    setLastFeedback(null);
     realtimeService.changeQuestion(session.pin, currentQIndex);
+  };
+
+  const handleOptionClick = (opt: string, optIdx: number) => {
+    if (!currentQuestion) return;
+
+    const normalizedOpt = opt.trim().toLowerCase();
+    const normalizedCorrect = (currentQuestion.correctAnswer || '').trim().toLowerCase();
+    const optLetter = String.fromCharCode(65 + optIdx).toLowerCase();
+
+    const isCorrect = (
+      normalizedOpt === normalizedCorrect ||
+      normalizedCorrect === optLetter ||
+      normalizedCorrect.startsWith(optLetter + '.') ||
+      normalizedCorrect.startsWith(optLetter + ')') ||
+      normalizedCorrect.startsWith(`(${optLetter})`) ||
+      normalizedOpt.includes(normalizedCorrect) ||
+      normalizedCorrect.includes(normalizedOpt)
+    );
+
+    let explanation = '';
+    if (isCorrect) {
+      explanation = currentQuestion.explanationCorrect || 
+        `ଏହା ସମ୍ପୂର୍ଣ୍ଣ ସଠିକ୍ ଉତ୍ତର ଅଟେ। ପ୍ରଦତ୍ତ ଐତିହାସିକ ତଥ୍ୟ ଅନୁସାରେ "${opt}" ସଠିକ୍ ଅଟେ। (Correct! This matches verified historical records.)`;
+    } else {
+      if (currentQuestion.explanationIncorrect && currentQuestion.explanationIncorrect[optIdx]) {
+        explanation = currentQuestion.explanationIncorrect[optIdx];
+      } else {
+        explanation = `"${opt}" ଏହି ପ୍ରଶ୍ନ ପାଇଁ ଭୁଲ୍ ବିକଳ୍ପ ଅଟେ। ଦୟାକରି ଅନ୍ୟ ବିକଳ୍ପ ଚେଷ୍ଟା କରନ୍ତୁ! (Incorrect option. Please check the other choices and try again!)`;
+      }
+    }
+
+    setClickedOptions(prev => ({
+      ...prev,
+      [optIdx]: isCorrect ? 'correct' : 'wrong'
+    }));
+
+    setLastFeedback({
+      isCorrect,
+      text: opt,
+      explanation,
+      optIndex: optIdx
+    });
+
+    if (isCorrect) {
+      setRevealAnswer(true);
+    }
+
+    realtimeService.clickOption(session.pin, optIdx, opt, isCorrect, explanation);
   };
 
   const handleAwardMarks = async (
@@ -335,32 +417,131 @@ export const TeacherControlScreen: React.FC<TeacherControlScreenProps> = ({
               {currentQuestion?.question}
             </h3>
 
-            {/* Options display */}
+            {/* Interactive Options (Clickable with immediate Right/Wrong Evaluation & Description) */}
             {currentQuestion?.options && currentQuestion.options.length > 0 && (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
-                {currentQuestion.options.map((opt, optIdx) => {
-                  const isCorrect = opt === currentQuestion.correctAnswer;
-                  return (
-                    <div
-                      key={optIdx}
-                      className={`p-3.5 rounded-2xl border text-sm font-medium transition-all flex items-center gap-3 ${
-                        revealAnswer && isCorrect
-                          ? 'bg-emerald-600 text-white border-emerald-600 shadow-md ring-2 ring-emerald-400'
-                          : revealAnswer && !isCorrect
-                          ? 'bg-slate-50 border-slate-200 text-slate-400'
-                          : 'bg-slate-50 border-slate-200 text-slate-800'
-                      }`}
-                    >
-                      <span className={`w-6 h-6 rounded-full flex items-center justify-center font-bold text-xs ${
-                        revealAnswer && isCorrect ? 'bg-white text-emerald-900' : 'bg-slate-200 text-slate-700'
+              <div className="space-y-3 pt-2">
+                <div className="flex items-center justify-between text-xs font-bold text-slate-500 px-1">
+                  <span>ବିକଳ୍ପ ଚୟନ କରନ୍ତୁ (Click an option to evaluate):</span>
+                  <span>{Object.keys(clickedOptions).length > 0 ? `${Object.keys(clickedOptions).length} Option(s) tested` : 'Interactive Mode Active'}</span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {currentQuestion.options.map((opt, optIdx) => {
+                    const normalizedOpt = opt.trim().toLowerCase();
+                    const normalizedCorrect = (currentQuestion.correctAnswer || '').trim().toLowerCase();
+                    const optLetter = String.fromCharCode(65 + optIdx).toLowerCase();
+                    const isCorrect = (
+                      normalizedOpt === normalizedCorrect ||
+                      normalizedCorrect === optLetter ||
+                      normalizedCorrect.startsWith(optLetter + '.') ||
+                      normalizedCorrect.startsWith(optLetter + ')') ||
+                      normalizedCorrect.startsWith(`(${optLetter})`) ||
+                      normalizedOpt.includes(normalizedCorrect) ||
+                      normalizedCorrect.includes(normalizedOpt)
+                    );
+                    const clickedStatus = clickedOptions[optIdx];
+
+                    return (
+                      <button
+                        key={optIdx}
+                        type="button"
+                        onClick={() => handleOptionClick(opt, optIdx)}
+                        className={`p-3.5 rounded-2xl border-2 text-left font-medium transition-all flex items-center justify-between gap-3 cursor-pointer select-none active:scale-[0.98] ${
+                          clickedStatus === 'correct' || (revealAnswer && isCorrect)
+                            ? 'bg-emerald-600 text-white border-emerald-500 shadow-lg ring-4 ring-emerald-300/60 scale-[1.01]'
+                            : clickedStatus === 'wrong'
+                            ? 'bg-rose-50 text-rose-950 border-rose-500 ring-2 ring-rose-300 shadow-xs animate-shake'
+                            : 'bg-slate-50 hover:bg-slate-100 hover:border-emerald-300 border-slate-200 text-slate-800'
+                        }`}
+                      >
+                        <div className="flex items-center gap-3">
+                          <span className={`w-7 h-7 rounded-full flex items-center justify-center font-bold text-xs shrink-0 transition-colors ${
+                            clickedStatus === 'correct' || (revealAnswer && isCorrect)
+                              ? 'bg-white text-emerald-900 shadow-xs'
+                              : clickedStatus === 'wrong'
+                              ? 'bg-rose-600 text-white'
+                              : 'bg-slate-200 text-slate-700'
+                          }`}>
+                            {String.fromCharCode(65 + optIdx)}
+                          </span>
+                          <span className="text-sm font-semibold">{opt}</span>
+                        </div>
+
+                        <div className="shrink-0">
+                          {(clickedStatus === 'correct' || (revealAnswer && isCorrect)) && (
+                            <span className="px-2 py-0.5 rounded-lg bg-emerald-700 text-white text-[11px] font-black flex items-center gap-1">
+                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-200" />
+                              <span>ସଠିକ୍</span>
+                            </span>
+                          )}
+                          {clickedStatus === 'wrong' && (
+                            <span className="px-2 py-0.5 rounded-lg bg-rose-600 text-white text-[11px] font-black flex items-center gap-1">
+                              <XCircle className="w-3.5 h-3.5 text-rose-200" />
+                              <span>ଭୁଲ୍</span>
+                            </span>
+                          )}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Prominent Live Feedback Banner (Shown when any option is clicked) */}
+            {lastFeedback && (
+              <div
+                className={`p-4 rounded-2xl border-2 transition-all duration-300 ${
+                  lastFeedback.isCorrect
+                    ? 'bg-emerald-50 border-emerald-500 text-emerald-950 ring-2 ring-emerald-200'
+                    : 'bg-rose-50 border-rose-500 text-rose-950 ring-2 ring-rose-200'
+                }`}
+              >
+                <div className="flex items-start gap-3">
+                  {lastFeedback.isCorrect ? (
+                    <CheckCircle2 className="w-7 h-7 text-emerald-600 shrink-0 mt-0.5" />
+                  ) : (
+                    <XCircle className="w-7 h-7 text-rose-600 shrink-0 mt-0.5" />
+                  )}
+                  <div className="space-y-1.5 flex-1">
+                    <div className="flex items-center justify-between">
+                      <span className={`font-black text-sm uppercase tracking-wide ${
+                        lastFeedback.isCorrect ? 'text-emerald-900' : 'text-rose-900'
                       }`}>
-                        {String.fromCharCode(65 + optIdx)}
+                        {lastFeedback.isCorrect
+                          ? '🎉 ସଠିକ୍ ଉତ୍ତର! (CORRECT ANSWER)'
+                          : '❌ ଭୁଲ୍ ଉତ୍ତର! (INCORRECT ANSWER - PLEASE TRY AGAIN)'}
                       </span>
-                      <span>{opt}</span>
-                      {revealAnswer && isCorrect && <Check className="w-4 h-4 ml-auto text-white stroke-[3]" />}
+                      <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${
+                        lastFeedback.isCorrect ? 'bg-emerald-200 text-emerald-900' : 'bg-rose-200 text-rose-900'
+                      }`}>
+                        Option {String.fromCharCode(65 + lastFeedback.optIndex)}
+                      </span>
                     </div>
-                  );
-                })}
+
+                    <p className="text-xs sm:text-sm font-semibold">
+                      ବାଛିଥିବା ବିକଳ୍ପ: <span className="underline">{lastFeedback.text}</span>
+                    </p>
+
+                    <div className="pt-2 border-t border-slate-200/60 text-xs sm:text-sm space-y-1">
+                      <span className="font-bold block text-slate-800">
+                        {lastFeedback.isCorrect
+                          ? 'ଏହି ଉତ୍ତର କାହିଁକି ସଠିକ୍ (Detailed Explanation):'
+                          : 'ଏହି ବିକଳ୍ପ କାହିଁକି ଭୁଲ୍ (Why this option is incorrect):'}
+                      </span>
+                      <p className="leading-relaxed text-slate-700">
+                        {lastFeedback.explanation}
+                      </p>
+                    </div>
+
+                    {!lastFeedback.isCorrect && (
+                      <div className="mt-2 bg-rose-100/90 text-rose-900 text-xs font-bold px-3 py-1.5 rounded-xl flex items-center gap-1.5">
+                        <Sparkles className="w-4 h-4 text-rose-700" />
+                        <span>ସଠିକ୍ ଉତ୍ତର ନମିଳିବା ପର୍ଯ୍ୟନ୍ତ ଅନ୍ୟ ବିକଳ୍ପଗୁଡ଼ିକ ଉପରେ କ୍ଲିକ୍ କରନ୍ତୁ! (Keep trying until you find the right one!)</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
               </div>
             )}
 

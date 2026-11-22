@@ -11,32 +11,62 @@ import {
   HelpCircle, 
   CheckCircle2, 
   X,
-  FileText
+  FileText,
+  Play,
+  ClipboardPaste,
+  Wand2
 } from 'lucide-react';
 import { db } from '../db';
 import type { Question, QuestionPattern, QuestionLanguage } from '../types';
-import { generateQuestionsFromSource } from '../services/aiGenerator';
+import { generateQuestionsFromSource, parseAndConvertPastedText } from '../services/aiGenerator';
 
 interface AiGeneratorScreenProps {
   onBack: () => void;
   geminiApiKey?: string;
   onNavigateToBank: () => void;
+  onStartLiveQuizWithQuestions?: (questions: Question[]) => void;
 }
+
+const SAMPLE_PASTE_TEXT = `1. ପ୍ରାଚୀନ କଳିଙ୍ଗ ଯୁଦ୍ଧ କେଉଁ ନଦୀ କୂଳରେ ସଂଗଠିତ ହୋଇଥିଲା?
+(A) ମହାନଦୀ
+(B) ଦୟା ନଦୀ
+(C) ବ୍ରାହ୍ମଣୀ
+(D) ଋଷିକୁଲ୍ୟା
+Ans: (B) ଦୟା ନଦୀ
+Exp: ଖ୍ରୀଷ୍ଟପୂର୍ବ ୨୬୧ ରେ ଅଶୋକ ଏବଂ କଳିଙ୍ଗ ସୈନ୍ୟବାହିନୀ ମଧ୍ୟରେ ଦୟା ନଦୀ କୂଳରେ ଧଉଳି ପାହାଡ଼ ନିକଟରେ କଳିଙ୍ଗ ଯୁଦ୍ଧ ସଂଘଠିତ ହୋଇଥିଲା।
+
+2. Who was the greatest ruler of Chedi (Mahameghavahana) dynasty of ancient Kalinga?
+A. Kharavela
+B. Ashoka
+C. Samudragupta
+D. Chandragupta
+Answer: A
+Explanation: Emperor Kharavela revived Kalinga's glory as recorded in the Hathigumpha inscription.
+
+3. ଖ୍ରୀଷ୍ଟପୂର୍ବ ୨୬୧ରେ ଦୟା ନଦୀ କୂଳରେ କଳିଙ୍ଗ ଯୁଦ୍ଧ ସଂଗଠିତ ହୋଇଥିଲା। (ସତ୍ୟ / ମିଥ୍ୟା)
+ଉତ୍ତର: ସତ୍ୟ
+ବ୍ୟାଖ୍ୟା: ମୌର୍ଯ୍ୟ ସମ୍ରାଟ ଅଶୋକଙ୍କ ରାଜତ୍ୱର ୮ମ ବର୍ଷ ଅର୍ଥାତ୍ ଖ୍ରୀ.ପୂ. ୨୬୧ରେ ଏହି ଯୁଦ୍ଧ ହୋଇଥିଲା।
+
+4. First battle of Panipat was fought in the year ______.
+Ans: 1526
+Exp: Babur defeated Ibrahim Lodi in 1526 marking the beginning of Mughal Empire.`;
 
 export const AiGeneratorScreen: React.FC<AiGeneratorScreenProps> = ({
   onBack,
   geminiApiKey,
-  onNavigateToBank
+  onNavigateToBank,
+  onStartLiveQuizWithQuestions
 }) => {
+  // Mode selection
+  const [activeTab, setActiveTab] = useState<'smart_paste' | 'ai_paragraph'>('smart_paste');
+
   // Input parameters
-  const [sourceText, setSourceText] = useState(
-    `ପ୍ରାଚୀନ କଳିଙ୍ଗର ଇତିହାସରେ ସମ୍ରାଟ ଖାରବେଳ ଏବଂ କଳିଙ୍ଗ ଯୁଦ୍ଧ ସର୍ବାଧିକ ଗୁରୁତ୍ୱପୂର୍ଣ୍ଣ ଅଧ୍ୟାୟ। ଖ୍ରୀଷ୍ଟପୂର୍ବ ୨୬୧ ରେ ମଗଧର ସମ୍ରାଟ ଅଶୋକ କଳିଙ୍ଗ ଆକ୍ରମଣ କରିଥିଲେ। ଦୟା ନଦୀ କୂଳରେ ଅନୁଷ୍ଠିତ ଏହି ଭୟଙ୍କର ଯୁଦ୍ଧରେ ଲକ୍ଷାଧିକ ଲୋକ ନିହତ ହୋଇଥିଲେ ଏବଂ ଅଶୋକଙ୍କ ହୃଦୟ ପରିବର୍ତ୍ତିତ ହୋଇ ସେ ଚଣ୍ଡାଶୋକରୁ ଧର୍ମାଶୋକରେ ପରିଣତ ହୋଇଥିଲେ। ପରବର୍ତ୍ତୀ କାଳରେ ମହାମେଘବାହନ ଖାରବେଳ କଳିଙ୍ଗର ଗୌରବ ପୁନଃପ୍ରତିଷ୍ଠା କରିଥିଲେ। ତାଙ୍କ ହାତୀଗୁମ୍ଫା ଶିଳାଲେଖରେ ତାଙ୍କ ୧୩ ବର୍ଷର କୀର୍ତ୍ତି କାହାଣୀ ପ୍ରାକୃତ ଭାଷା ଓ ବ୍ରାହ୍ମୀ ଲିପିରେ ଖୋଦିତ ହୋଇଛି।`
-  );
+  const [sourceText, setSourceText] = useState(SAMPLE_PASTE_TEXT);
   const [subject, setSubject] = useState('History of Odisha');
   const [department, setDepartment] = useState('History');
   const [semester, setSemester] = useState('4th Semester');
   const [paper, setPaper] = useState('Core Paper VII');
-  const [topic, setTopic] = useState('Kalinga War & Kharavela');
+  const [topic, setTopic] = useState('Kalinga War & Ancient Odisha');
   const [language, setLanguage] = useState<QuestionLanguage>('bilingual');
   const [selectedPatterns, setSelectedPatterns] = useState<QuestionPattern[]>([
     'mcq', 'blanks', 'true_false', 'one_word', 'short'
@@ -61,29 +91,64 @@ export const AiGeneratorScreen: React.FC<AiGeneratorScreenProps> = ({
 
   const handleGenerate = async () => {
     if (!sourceText.trim()) {
-      alert('Please enter or paste source historical text, notes or questions.');
+      alert('Please enter or paste source questions or notes.');
       return;
     }
 
     setIsGenerating(true);
     try {
-      const results = await generateQuestionsFromSource({
-        text: sourceText,
-        subject,
-        department,
-        semester,
-        paper,
-        topic,
-        language,
-        patterns: selectedPatterns,
-        targetCount: questionCount,
-        apiKey: geminiApiKey
-      });
+      let results: Question[] = [];
 
-      setGeneratedQuestions(results);
-      setSelectedIndices(results.map((_, i) => i)); // select all by default
+      if (activeTab === 'smart_paste') {
+        // Universal Smart Parser
+        results = parseAndConvertPastedText(sourceText, {
+          subject,
+          department,
+          semester,
+          paper,
+          topic,
+          language
+        });
+
+        // If direct parser didn't find structure, fallback to AI generator
+        if (results.length === 0) {
+          results = await generateQuestionsFromSource({
+            text: sourceText,
+            subject,
+            department,
+            semester,
+            paper,
+            topic,
+            language,
+            patterns: selectedPatterns,
+            targetCount: questionCount,
+            apiKey: geminiApiKey
+          });
+        }
+      } else {
+        // AI Paragraph / Chapter Generator
+        results = await generateQuestionsFromSource({
+          text: sourceText,
+          subject,
+          department,
+          semester,
+          paper,
+          topic,
+          language,
+          patterns: selectedPatterns,
+          targetCount: questionCount,
+          apiKey: geminiApiKey
+        });
+      }
+
+      if (results.length === 0) {
+        alert('Could not parse questions from the pasted text. Please verify formatting or try sample questions.');
+      } else {
+        setGeneratedQuestions(results);
+        setSelectedIndices(results.map((_, i) => i)); // select all by default
+      }
     } catch (err: any) {
-      alert('Error generating questions: ' + err.message);
+      alert('Error analyzing questions: ' + err.message);
     } finally {
       setIsGenerating(false);
     }
@@ -144,6 +209,37 @@ export const AiGeneratorScreen: React.FC<AiGeneratorScreenProps> = ({
     }
   };
 
+  const handleStartLiveQuizDirectly = async () => {
+    const questionsToUse = selectedIndices.length > 0 
+      ? selectedIndices.map(i => generatedQuestions[i])
+      : generatedQuestions;
+
+    if (questionsToUse.length === 0) {
+      alert('Please parse or generate questions first.');
+      return;
+    }
+
+    // Save to database first
+    const savedQuestions: Question[] = [];
+    for (const q of questionsToUse) {
+      const existing = await db.questions.where('question').equals(q.question).first();
+      if (existing) {
+        savedQuestions.push(existing);
+      } else {
+        const id = await db.questions.add({
+          ...q,
+          approved: true,
+          updatedAt: new Date().toISOString()
+        });
+        savedQuestions.push({ ...q, id: Number(id), approved: true });
+      }
+    }
+
+    if (onStartLiveQuizWithQuestions) {
+      onStartLiveQuizWithQuestions(savedQuestions);
+    }
+  };
+
   const handleUpdateEditingQuestion = (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingQuestion) return;
@@ -181,22 +277,75 @@ export const AiGeneratorScreen: React.FC<AiGeneratorScreenProps> = ({
         </button>
       </div>
 
+      {/* Mode Switcher Tabs */}
+      <div className="flex rounded-2xl bg-slate-200/80 p-1 border border-slate-300/80 max-w-xl">
+        <button
+          type="button"
+          onClick={() => {
+            setActiveTab('smart_paste');
+            if (sourceText.length < 50) setSourceText(SAMPLE_PASTE_TEXT);
+          }}
+          className={`flex-1 py-2.5 px-4 rounded-xl text-xs sm:text-sm font-bold flex items-center justify-center gap-2 transition-all ${
+            activeTab === 'smart_paste'
+              ? 'bg-white text-emerald-900 shadow-sm'
+              : 'text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          <ClipboardPaste className="w-4 h-4 text-emerald-600" />
+          <span>ସ୍ମାର୍ଟ ପ୍ରଶ୍ନ ପେଷ୍ଟ (Smart Paste & Quiz)</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('ai_paragraph')}
+          className={`flex-1 py-2.5 px-4 rounded-xl text-xs sm:text-sm font-bold flex items-center justify-center gap-2 transition-all ${
+            activeTab === 'ai_paragraph'
+              ? 'bg-white text-amber-900 shadow-sm'
+              : 'text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          <Wand2 className="w-4 h-4 text-amber-600" />
+          <span>AI ପାଠ୍ୟ ବିଶ୍ଳେଷଣ (AI Chapter Notes)</span>
+        </button>
+      </div>
+
       {/* Generation Parameters Card */}
       <div className="bg-white rounded-3xl p-5 sm:p-6 border border-slate-200 shadow-xs space-y-5">
         <div>
-          <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1.5 flex items-center justify-between">
-            <span>ମୂଳ ପାଠ୍ୟ, ନୋଟ୍ସ କିମ୍ବା ଉତ୍ତର (Source Content / Notes / Paragraph)*</span>
-            <span className="text-[11px] text-emerald-700 lowercase font-medium">
-              Odia / English supported
-            </span>
-          </label>
+          <div className="flex items-center justify-between mb-1.5">
+            <label className="block text-xs font-bold uppercase tracking-wider text-slate-700">
+              {activeTab === 'smart_paste'
+                ? 'ଯେକୌଣସି ଫର୍ମାଟରେ ପ୍ରଶ୍ନ ପେଷ୍ଟ କରନ୍ତୁ (Paste Questions in Any Format - MCQ, Blanks, T/F, Q&A)*'
+                : 'ମୂଳ ପାଠ୍ୟ, ନୋଟ୍ସ କିମ୍ବା ଅଧ୍ୟାୟ (Source Content / Notes / Paragraph)*'}
+            </label>
+            {activeTab === 'smart_paste' && (
+              <button
+                type="button"
+                onClick={() => setSourceText(SAMPLE_PASTE_TEXT)}
+                className="text-[11px] font-bold text-emerald-700 hover:text-emerald-800 underline flex items-center gap-1"
+              >
+                <span>ନମୁନା ଫର୍ମାଟ୍ ଲୋଡ୍ କରନ୍ତୁ (Load Sample)</span>
+              </button>
+            )}
+          </div>
+
           <textarea
-            rows={5}
+            rows={7}
             value={sourceText}
             onChange={(e) => setSourceText(e.target.value)}
-            placeholder="ପାଠ୍ୟ ପୁସ୍ତକର ଅଧ୍ୟାୟ, ବିଷୟବସ୍ତୁ, ଐତିହାସିକ ଘଟଣାବଳୀ ବା ପ୍ରଶ୍ନୋତ୍ତର ଏଠାରେ ପେଷ୍ଟ କରନ୍ତୁ..."
+            placeholder={
+              activeTab === 'smart_paste'
+                ? "୧. କଳିଙ୍ଗ ଯୁଦ୍ଧ କେବେ ହୋଇଥିଲା?\n(A) ୨୬୧ BC\n(B) ୨୬୨ BC\n(C) ୨୭୩ BC\n(D) ୩୨୨ BC\nAns: (A) ୨୬୧ BC\nExp: ଖ୍ରୀଷ୍ଟପୂର୍ବ ୨୬୧ରେ ଦୟା ନଦୀ କୂଳରେ କଳିଙ୍ଗ ଯୁଦ୍ଧ ହୋଇଥିଲା।"
+                : "ପାଠ୍ୟ ପୁସ୍ତକର ଅଧ୍ୟାୟ, ବିଷୟବସ୍ତୁ, ଐତିହାସିକ ଘଟଣାବଳୀ ବା ପ୍ରଶ୍ନୋତ୍ତର ଏଠାରେ ପେଷ୍ଟ କରନ୍ତୁ..."
+            }
             className="w-full p-4 rounded-2xl border border-slate-200 text-sm focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 leading-relaxed font-sans"
           />
+
+          {activeTab === 'smart_paste' && (
+            <p className="mt-1.5 text-xs text-slate-500 font-medium">
+              💡 ଟିପ୍: MCQ (A,B,C,D କିମ୍ବା କ,ଖ,ଗ,ଘ), True/False, Fill in blanks (____), କିମ୍ବା Q&A ପେଷ୍ଟ କରନ୍ତୁ। ସିଷ୍ଟମ୍ ସ୍ୱୟଂଚାଳିତ ଭାବେ ଏହାକୁ କୁଇଜ୍ ରେ ପରିଣତ କରିବ ଏବଂ ଭୁଲ୍/ସଠିକ୍ ବ୍ୟାଖ୍ୟା ଯୋଡ଼ିବ।
+            </p>
+          )}
         </div>
 
         {/* Filters and Meta Details */}
@@ -248,43 +397,50 @@ export const AiGeneratorScreen: React.FC<AiGeneratorScreenProps> = ({
           </div>
         </div>
 
-        {/* Question Patterns Selector */}
-        <div>
-          <label className="block text-[11px] font-bold text-slate-600 uppercase mb-2">
-            ପ୍ରଶ୍ନ ପ୍ରକାର ଚୟନ କରନ୍ତୁ (Question Patterns):
-          </label>
-          <div className="flex flex-wrap gap-2">
-            {[
-              { id: 'mcq', label: 'ବହୁବିକଳ୍ପ (MCQ - 1 Mark)', marks: 1 },
-              { id: 'blanks', label: 'ଶୂନ୍ୟସ୍ଥାନ (Fill Blanks - 1 Mark)', marks: 1 },
-              { id: 'true_false', label: 'ସତ୍ୟ/ମିଥ୍ୟା (True/False - 1 Mark)', marks: 1 },
-              { id: 'one_word', label: 'ଗୋଟିଏ ଶବ୍ଦ (One Word - 1 Mark)', marks: 1 },
-              { id: 'short', label: 'ସଂକ୍ଷିପ୍ତ ଉତ୍ତର (Short Answer - 2 Marks)', marks: 2 },
-              { id: 'long', label: 'ଦୀର୍ଘ ଉତ୍ତର (Long Answer - 5/8 Marks)', marks: 5 }
-            ].map(p => {
-              const active = selectedPatterns.includes(p.id as QuestionPattern);
-              return (
-                <button
-                  key={p.id}
-                  type="button"
-                  onClick={() => togglePattern(p.id as QuestionPattern)}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-all active:scale-95 ${
-                    active 
-                      ? 'bg-amber-100 border-amber-400 text-amber-950 shadow-xs' 
-                      : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
-                  }`}
-                >
-                  {p.label}
-                </button>
-              );
-            })}
+        {/* Question Patterns Selector (Shown for AI Paragraph mode) */}
+        {activeTab === 'ai_paragraph' && (
+          <div>
+            <label className="block text-[11px] font-bold text-slate-600 uppercase mb-2">
+              ପ୍ରଶ୍ନ ପ୍ରକାର ଚୟନ କରନ୍ତୁ (Question Patterns):
+            </label>
+            <div className="flex flex-wrap gap-2">
+              {[
+                { id: 'mcq', label: 'ବହୁବିକଳ୍ପ (MCQ - 1 Mark)', marks: 1 },
+                { id: 'blanks', label: 'ଶୂନ୍ୟସ୍ଥାନ (Fill Blanks - 1 Mark)', marks: 1 },
+                { id: 'true_false', label: 'ସତ୍ୟ/ମିଥ୍ୟା (True/False - 1 Mark)', marks: 1 },
+                { id: 'one_word', label: 'ଗୋଟିଏ ଶବ୍ଦ (One Word - 1 Mark)', marks: 1 },
+                { id: 'short', label: 'ସଂକ୍ଷିପ୍ତ ଉତ୍ତର (Short Answer - 2 Marks)', marks: 2 },
+                { id: 'long', label: 'ଦୀର୍ଘ ଉତ୍ତର (Long Answer - 5/8 Marks)', marks: 5 }
+              ].map(p => {
+                const active = selectedPatterns.includes(p.id as QuestionPattern);
+                return (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => togglePattern(p.id as QuestionPattern)}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-all active:scale-95 ${
+                      active 
+                        ? 'bg-amber-100 border-amber-400 text-amber-950 shadow-xs' 
+                        : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    {p.label}
+                  </button>
+                );
+              })}
+            </div>
           </div>
-        </div>
+        )}
 
-        {/* Generate Button */}
+        {/* Generate / Parse Button */}
         <div className="pt-2 flex flex-col sm:flex-row items-center justify-between gap-3 border-t border-slate-100">
           <div className="flex items-center gap-2 text-xs text-slate-500">
-            {geminiApiKey ? (
+            {activeTab === 'smart_paste' ? (
+              <span className="text-emerald-700 font-semibold flex items-center gap-1">
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                Universal Smart Parser ସକ୍ରିୟ (Odia & English)
+              </span>
+            ) : geminiApiKey ? (
               <span className="text-emerald-700 font-semibold flex items-center gap-1">
                 <CheckCircle2 className="w-3.5 h-3.5" />
                 Gemini API ସଂଯୁକ୍ତ (Connected)
@@ -300,17 +456,21 @@ export const AiGeneratorScreen: React.FC<AiGeneratorScreenProps> = ({
           <button
             onClick={handleGenerate}
             disabled={isGenerating}
-            className="w-full sm:w-auto px-6 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 via-amber-600 to-amber-700 hover:from-amber-600 hover:to-amber-800 text-slate-950 font-bold text-xs uppercase tracking-wider shadow-md active:scale-95 transition-all flex items-center justify-center gap-2"
+            className="w-full sm:w-auto px-6 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 hover:from-emerald-700 hover:to-teal-700 text-white font-bold text-xs uppercase tracking-wider shadow-md active:scale-95 transition-all flex items-center justify-center gap-2 cursor-pointer"
           >
             {isGenerating ? (
               <>
                 <RotateCw className="w-4 h-4 animate-spin" />
-                <span>ପ୍ରଶ୍ନ ପ୍ରସ୍ତୁତ ହେଉଛି...</span>
+                <span>ବିଶ୍ଳେଷଣ ଚାଲିଛି...</span>
               </>
             ) : (
               <>
                 <Sparkles className="w-4 h-4" />
-                <span>ପ୍ରଶ୍ନ ପ୍ରସ୍ତୁତ କରନ୍ତୁ (Generate Questions)</span>
+                <span>
+                  {activeTab === 'smart_paste' 
+                    ? 'ବିଶ୍ଳେଷଣ ଓ କୁଇଜ୍ ପ୍ରସ୍ତୁତି (Analyze & Convert)' 
+                    : 'ପ୍ରଶ୍ନ ପ୍ରସ୍ତୁତ କରନ୍ତୁ (Generate Questions)'}
+                </span>
               </>
             )}
           </button>
@@ -345,11 +505,22 @@ export const AiGeneratorScreen: React.FC<AiGeneratorScreenProps> = ({
               </button>
               <button
                 onClick={() => handleSaveToBank(selectedIndices)}
-                className="px-4 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-xs active:scale-95 transition-all flex items-center gap-1.5"
+                className="px-3.5 py-1.5 rounded-xl bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-bold shadow-xs active:scale-95 transition-all flex items-center gap-1.5 cursor-pointer"
               >
                 <Save className="w-3.5 h-3.5" />
                 <span>ଅନୁମୋଦନ କରନ୍ତୁ ({selectedIndices.length} Approved)</span>
               </button>
+
+              {onStartLiveQuizWithQuestions && (
+                <button
+                  onClick={handleStartLiveQuizDirectly}
+                  className="px-4 py-1.5 rounded-xl bg-gradient-to-r from-amber-400 to-amber-500 hover:from-amber-300 hover:to-amber-400 text-slate-950 text-xs font-black shadow-md active:scale-95 transition-all flex items-center gap-1.5 cursor-pointer"
+                  title="Start live quiz immediately with these questions"
+                >
+                  <Play className="w-3.5 h-3.5 fill-current" />
+                  <span>ଲାଇଭ୍ କୁଇଜ୍ ଆରମ୍ଭ କରନ୍ତୁ (Start Live Quiz)</span>
+                </button>
+              )}
             </div>
           </div>
 
