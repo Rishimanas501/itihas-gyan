@@ -62,6 +62,8 @@ export const TeacherControlScreen: React.FC<TeacherControlScreenProps> = ({
   const [studentCount, setStudentCount] = useState(0);
   const [isQrModalOpen, setIsQrModalOpen] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [refreshToast, setRefreshToast] = useState(false);
 
   // Interactive Option Click Feedback state
   const [clickedOptions, setClickedOptions] = useState<{ [index: number]: 'correct' | 'wrong' }>({});
@@ -370,6 +372,34 @@ export const TeacherControlScreen: React.FC<TeacherControlScreenProps> = ({
     }
   };
 
+  const handleRefresh = async () => {
+    setIsRefreshing(true);
+    try {
+      realtimeService.initTeacherSession(session, questions);
+      if (session.pin) {
+        const res = await fetch(`/api/session/${session.pin}`);
+        const data = await res.json();
+        if (data && data.found) {
+          if (data.handRaises && Array.isArray(data.handRaises)) {
+            setHandRaises(data.handRaises);
+          }
+          if (data.studentCount !== undefined) {
+            setStudentCount(data.studentCount);
+          }
+          if (data.currentQuestionIndex !== undefined) {
+            setCurrentQIndex(data.currentQuestionIndex);
+          }
+        }
+      }
+      setRefreshToast(true);
+      setTimeout(() => setRefreshToast(false), 2500);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setTimeout(() => setIsRefreshing(false), 500);
+    }
+  };
+
   return (
     <div className="max-w-6xl mx-auto px-4 py-6 space-y-6">
       {/* Top Session Bar */}
@@ -389,8 +419,19 @@ export const TeacherControlScreen: React.FC<TeacherControlScreenProps> = ({
           </p>
         </div>
 
-        {/* PIN & QR Shortcuts */}
+        {/* PIN & QR Shortcuts & Actions */}
         <div className="flex flex-wrap items-center gap-2.5">
+          {/* Refresh Button */}
+          <button
+            onClick={handleRefresh}
+            disabled={isRefreshing}
+            className="px-3.5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold flex items-center gap-1.5 transition-all shadow-md active:scale-95 cursor-pointer"
+            title="ସେସନ୍ ଏବଂ ହାତ ଟେକିବା ଲିଷ୍ଟ୍ ରିଫ୍ରେଶ୍ କରନ୍ତୁ"
+          >
+            <RotateCcw className={`w-4 h-4 text-slate-950 ${isRefreshing ? 'animate-spin' : ''}`} />
+            <span>{isRefreshing ? 'ରିଫ୍ରେଶ୍...' : '🔄 ରିଫ୍ରେଶ୍ (Refresh)'}</span>
+          </button>
+
           <div className="px-4 py-2 rounded-2xl bg-slate-800/80 border border-slate-700 flex items-center gap-3">
             <div>
               <div className="text-[10px] text-slate-400 uppercase font-bold">SESSION PIN</div>
@@ -442,6 +483,14 @@ export const TeacherControlScreen: React.FC<TeacherControlScreenProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Refresh Feedback Alert */}
+      {refreshToast && (
+        <div className="bg-emerald-600 text-white text-xs font-bold py-2.5 px-4 rounded-2xl shadow-lg flex items-center justify-center gap-2 animate-in fade-in slide-in-from-top-2">
+          <CheckCircle2 className="w-4 h-4 text-white" />
+          <span>ସେସନ୍ ତଥା ହାତ ଟେକିଥିବା ଛାତ୍ର ଲିଷ୍ଟ୍ ସଫଳତାର ସହ ରିଫ୍ରେଶ୍ ହେଲା! (Refreshed Successfully)</span>
+        </div>
+      )}
 
       {/* Main Grid: Left = Active Question & Controls, Right = Hand Raise Queue & Marking */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

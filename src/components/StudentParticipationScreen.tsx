@@ -12,7 +12,8 @@ import {
   LogOut,
   HelpCircle,
   Clock,
-  WifiOff
+  WifiOff,
+  RotateCcw
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { BrandHeader } from './BrandHeader';
@@ -58,6 +59,54 @@ export const StudentParticipationScreen: React.FC<StudentParticipationScreenProp
   const [hasAnswered, setHasAnswered] = useState(false);
   const [optionFeedback, setOptionFeedback] = useState<{ isCorrect: boolean; text: string; explanation: string } | null>(null);
   const [showRaiseAlert, setShowRaiseAlert] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [refreshToast, setRefreshToast] = useState(false);
+
+  const handleRefresh = async () => {
+    if (!pin.trim()) return;
+    setIsRefreshing(true);
+    try {
+      if (!realtimeService.isSocketConnected()) {
+        realtimeService.connect();
+      }
+      if (isJoined && rollNo.trim()) {
+        realtimeService.joinAsStudent(pin.trim(), rollNo.trim(), studentName.trim());
+      }
+      const res = await fetch(`/api/session/${pin.trim()}`);
+      const data = await res.json();
+      if (data && data.found) {
+        if (data.currentQuestionIndex !== undefined) {
+          setQuestionIndex(data.currentQuestionIndex);
+        }
+        if (data.title) {
+          setSessionTitle(data.title);
+        }
+        if (data.isTeacherOnline !== undefined) {
+          setIsTeacherOnline(data.isTeacherOnline);
+        }
+        if (data.questions && Array.isArray(data.questions)) {
+          setAllQuestions(data.questions);
+          const q = data.currentQuestion || data.questions[data.currentQuestionIndex || 0];
+          if (q) setCurrentQuestion(q);
+        } else if (data.currentQuestion) {
+          setCurrentQuestion(data.currentQuestion);
+        }
+        if (data.handRaises && Array.isArray(data.handRaises)) {
+          const found = data.handRaises.find((h: any) => h.rollNo === rollNo.trim());
+          if (found) {
+            setHasRaisedHand(true);
+            setAssignedRank(found.rank);
+          }
+        }
+      }
+      setRefreshToast(true);
+      setTimeout(() => setRefreshToast(false), 2000);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setTimeout(() => setIsRefreshing(false), 500);
+    }
+  };
 
   // Track realtime socket connection state
   useEffect(() => {
@@ -321,11 +370,21 @@ export const StudentParticipationScreen: React.FC<StudentParticipationScreenProp
         <div className="max-w-md w-full bg-white rounded-3xl p-6 sm:p-8 shadow-xl border border-slate-200 space-y-6">
           <div className="text-center space-y-2">
             <BrandHeader size="md" align="center" />
-            <div className="flex items-center justify-center gap-1.5 mt-1">
+            <div className="flex items-center justify-center gap-2 mt-1">
               <span className={`w-2 h-2 rounded-full ${isServerConnected ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`}></span>
               <span className="text-[11px] font-semibold text-slate-600">
                 {isServerConnected ? 'ଲାଇଭ୍ ସଂଯୁକ୍ତ (Server Online)' : 'ସର୍ଭର ସଂଯୋଗ ଚାଲିଛି...'}
               </span>
+              <button
+                type="button"
+                onClick={handleRefresh}
+                disabled={isRefreshing}
+                className="px-2 py-0.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-[11px] font-bold inline-flex items-center gap-1 border border-emerald-200 transition-colors"
+                title="ରିଫ୍ରେଶ୍ କରନ୍ତୁ"
+              >
+                <RotateCcw className={`w-3 h-3 ${isRefreshing ? 'animate-spin' : ''}`} />
+                <span>ରିଫ୍ରେଶ୍</span>
+              </button>
             </div>
             <div className="inline-block px-3 py-1 rounded-full bg-emerald-100 text-emerald-900 text-xs font-bold uppercase mt-2">
               ଛାତ୍ର ଯୋଗଦାନ (Student Join)
@@ -415,7 +474,7 @@ export const StudentParticipationScreen: React.FC<StudentParticipationScreenProp
   return (
     <div className="max-w-md mx-auto px-4 py-5 space-y-4">
       {/* Top Student Header */}
-      <div className="bg-emerald-900 text-white rounded-3xl p-4 sm:p-5 shadow-lg border border-emerald-800 flex items-center justify-between">
+      <div className="bg-emerald-900 text-white rounded-3xl p-4 sm:p-5 shadow-lg border border-emerald-800 flex items-center justify-between gap-3">
         <div className="space-y-0.5">
           <BrandHeader size="sm" lightText={true} showSubtitle={false} />
           <div className="text-xs text-emerald-200 font-medium">
@@ -429,14 +488,35 @@ export const StudentParticipationScreen: React.FC<StudentParticipationScreenProp
           </div>
         </div>
 
-        {/* Score pill */}
-        <div className="text-right">
-          <div className="text-[10px] text-emerald-300 uppercase font-bold">ମୋଟ ମାର୍କ</div>
-          <div className="font-mono text-2xl font-black text-amber-300">
-            {myScore} <span className="text-xs font-normal text-emerald-200">pts</span>
+        {/* Refresh & Score section */}
+        <div className="flex items-center gap-2.5">
+          <button
+            onClick={handleRefresh}
+            disabled={isRefreshing}
+            className="px-3 py-2 rounded-2xl bg-emerald-800 hover:bg-emerald-700 text-amber-300 text-xs font-bold flex items-center gap-1.5 border border-emerald-700 active:scale-95 transition-all shadow-xs"
+            title="ପୃଷ୍ଠା ରିଫ୍ରେଶ୍ କରନ୍ତୁ (Refresh)"
+          >
+            <RotateCcw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
+            <span>ରିଫ୍ରେଶ୍</span>
+          </button>
+
+          {/* Score pill */}
+          <div className="text-right pl-1">
+            <div className="text-[10px] text-emerald-300 uppercase font-bold">ମୋଟ ମାର୍କ</div>
+            <div className="font-mono text-2xl font-black text-amber-300">
+              {myScore} <span className="text-xs font-normal text-emerald-200">pts</span>
+            </div>
           </div>
         </div>
       </div>
+
+      {/* Refresh confirmation notice */}
+      {refreshToast && (
+        <div className="bg-emerald-700 text-white text-xs font-bold py-2 px-4 rounded-2xl shadow-md flex items-center justify-center gap-1.5 animate-in fade-in">
+          <CheckCircle2 className="w-4 h-4 text-emerald-300" />
+          <span>ପ୍ରଶ୍ନ ଓ ସର୍ଭର ତଥ୍ୟ ରିଫ୍ରେଶ୍ ହେଲା! (Refreshed)</span>
+        </div>
+      )}
 
       {/* REQUIREMENT 1: TEACHER OFFLINE PAUSE STATE */}
       {!isTeacherOnline && (
