@@ -103,6 +103,7 @@ class ClassroomRealtimeService {
         'description_toggled',
         'marks_awarded',
         'session_ended',
+        'teacher_status_changed',
         'raise_hand_ack',
         'join_success',
         'join_error'

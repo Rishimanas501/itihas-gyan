@@ -104,6 +104,7 @@ app.get('/api/session/:pin', (req, res) => {
     handRaises: session.handRaises,
     studentCount: session.students.size,
     students: Array.from(session.students.values()),
+    isTeacherOnline: session.isTeacherOnline !== false,
     revealAnswer: session.revealAnswer,
     showDescription: session.showDescription
   });
@@ -281,6 +282,10 @@ io.on('connection', (socket) => {
       current.subject = session.subject || current.subject;
       current.topic = session.topic || current.topic;
     }
+
+    current.teacherSocketId = socket.id;
+    current.isTeacherOnline = true;
+    io.to(`session_${pin}`).emit('teacher_status_changed', { isTeacherOnline: true });
 
     socket.emit('session_state_updated', serializeSession(current));
     // Immediately emit current hand raises and student list to teacher
@@ -535,7 +540,16 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
-    // Handle socket disconnect
+    for (const [pin, session] of activeSessions.entries()) {
+      if (session.teacherSocketId === socket.id) {
+        session.isTeacherOnline = false;
+        io.to(`session_${pin}`).emit('teacher_status_changed', {
+          isTeacherOnline: false,
+          message: 'ଅଧ୍ୟାପକ ସାମୟିକ ଭାବେ ଅଫଲାଇନ୍ ଅଛନ୍ତି... ଦୟାକରି ଅପେକ୍ଷା କରନ୍ତୁ।'
+        });
+        console.log(`[Session ${pin}] Teacher disconnected (Waiting for teacher relaunch)`);
+      }
+    }
   });
 });
 
@@ -555,6 +569,7 @@ function serializeSession(s) {
     isTimerRunning: s.isTimerRunning,
     handRaises: s.handRaises,
     studentCount: s.students.size,
+    isTeacherOnline: s.isTeacherOnline !== false,
     leaderboard: Array.from(s.scores.values()).sort((a, b) => b.totalMarks - a.totalMarks)
   };
 }

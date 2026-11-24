@@ -10,7 +10,9 @@ import {
   Trophy, 
   ArrowRight,
   LogOut,
-  HelpCircle
+  HelpCircle,
+  Clock,
+  WifiOff
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { BrandHeader } from './BrandHeader';
@@ -48,8 +50,12 @@ export const StudentParticipationScreen: React.FC<StudentParticipationScreenProp
   const [revealAnswer, setRevealAnswer] = useState(false);
   const [isServerConnected, setIsServerConnected] = useState(realtimeService.isSocketConnected());
 
-  // Interactive option click state on student mobile
+  // Teacher connection tracking: if teacher closes app, pause & wait
+  const [isTeacherOnline, setIsTeacherOnline] = useState(true);
+
+  // Single option selection per question: student cannot re-click or change answer
   const [selectedOption, setSelectedOption] = useState<number | null>(null);
+  const [hasAnswered, setHasAnswered] = useState(false);
   const [optionFeedback, setOptionFeedback] = useState<{ isCorrect: boolean; text: string; explanation: string } | null>(null);
   const [showRaiseAlert, setShowRaiseAlert] = useState(false);
 
@@ -91,6 +97,9 @@ export const StudentParticipationScreen: React.FC<StudentParticipationScreenProp
             if (data.title) {
               setSessionTitle(data.title);
             }
+            if (data.isTeacherOnline !== undefined) {
+              setIsTeacherOnline(data.isTeacherOnline);
+            }
             if (data.questions && Array.isArray(data.questions)) {
               setAllQuestions(data.questions);
               const q = data.currentQuestion || data.questions[data.currentQuestionIndex || 0];
@@ -127,6 +136,7 @@ export const StudentParticipationScreen: React.FC<StudentParticipationScreenProp
         setAssignedRank(null);
         setRevealAnswer(false);
         setSelectedOption(null);
+        setHasAnswered(false);
         setOptionFeedback(null);
         setShowRaiseAlert(false);
 
@@ -172,6 +182,12 @@ export const StudentParticipationScreen: React.FC<StudentParticipationScreenProp
       }
     });
 
+    const unsubTeacherStatus = realtimeService.on('teacher_status_changed', (data: any) => {
+      if (data && data.isTeacherOnline !== undefined) {
+        setIsTeacherOnline(data.isTeacherOnline);
+      }
+    });
+
     const unsubJoinSuccess = realtimeService.on('join_success', (data: any) => {
       if (data && data.session) {
         const s = data.session;
@@ -180,6 +196,9 @@ export const StudentParticipationScreen: React.FC<StudentParticipationScreenProp
         }
         if (s.title) {
           setSessionTitle(s.title);
+        }
+        if (s.isTeacherOnline !== undefined) {
+          setIsTeacherOnline(s.isTeacherOnline);
         }
         if (s.questions && Array.isArray(s.questions)) {
           setAllQuestions(s.questions);
@@ -196,18 +215,6 @@ export const StudentParticipationScreen: React.FC<StudentParticipationScreenProp
       }
     });
 
-    // Option evaluated by teacher or classroom interaction
-    const unsubOption = realtimeService.on('option_clicked', (data: any) => {
-      if (data && data.optIndex !== undefined) {
-        setSelectedOption(data.optIndex);
-        setOptionFeedback({
-          isCorrect: data.isCorrect,
-          text: data.optionText,
-          explanation: data.explanation
-        });
-      }
-    });
-
     const unsubScore = realtimeService.on('marks_awarded', (data: any) => {
       if (data && data.rollNo === rollNo) {
         setMyScore((prev) => prev + (data.marks || 0));
@@ -221,8 +228,8 @@ export const StudentParticipationScreen: React.FC<StudentParticipationScreenProp
       unsubQ();
       unsubReveal();
       unsubHands();
+      unsubTeacherStatus();
       unsubJoinSuccess();
-      unsubOption();
       window.removeEventListener('raise_hand_ack', unsubAck);
       unsubScore();
     };
@@ -248,12 +255,17 @@ export const StudentParticipationScreen: React.FC<StudentParticipationScreenProp
     setShowRaiseAlert(false);
   };
 
-  // Student Option Click evaluation
+  // Student Option Click evaluation (Single choice per question strictly enforced)
   const handleOptionClick = (opt: string, optIdx: number) => {
-    // REQUIREMENT: "jab tab raise hand pe click nahin karega to woh answer ke option par click karnese kuch bhi nahin hoga."
+    // 1. Must raise hand first
     if (!hasRaisedHand) {
       setShowRaiseAlert(true);
       setTimeout(() => setShowRaiseAlert(false), 3000);
+      return;
+    }
+
+    // 2. REQUIREMENT: "ek student sirf ek baar hi apna option choose kar sakega dobara nahin"
+    if (hasAnswered || selectedOption !== null) {
       return;
     }
 
@@ -287,6 +299,7 @@ export const StudentParticipationScreen: React.FC<StudentParticipationScreenProp
     }
 
     setSelectedOption(optIdx);
+    setHasAnswered(true);
     setOptionFeedback({
       isCorrect,
       text: opt,
@@ -411,7 +424,7 @@ export const StudentParticipationScreen: React.FC<StudentParticipationScreenProp
           <div className="flex items-center gap-1.5 pt-0.5">
             <span className={`w-2 h-2 rounded-full ${isServerConnected ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`}></span>
             <span className="text-[10px] text-emerald-200">
-              {isServerConnected ? 'ଲାଇଭ୍ ସଂଯୁକ୍ତ (Connected to Laptop)' : 'ସର୍ଭର ସଂଯୋଗ ଚାଲିଛି...'}
+              {isServerConnected ? 'ଲାଇଭ୍ ସଂଯୁକ୍ତ (Connected)' : 'ସର୍ଭର ସଂଯୋଗ ଚାଲିଛି...'}
             </span>
           </div>
         </div>
@@ -424,6 +437,24 @@ export const StudentParticipationScreen: React.FC<StudentParticipationScreenProp
           </div>
         </div>
       </div>
+
+      {/* REQUIREMENT 1: TEACHER OFFLINE PAUSE STATE */}
+      {!isTeacherOnline && (
+        <div className="p-5 rounded-3xl bg-amber-50 border-2 border-amber-400 text-center space-y-2.5 shadow-sm animate-pulse">
+          <div className="w-12 h-12 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center mx-auto">
+            <Clock className="w-6 h-6 animate-spin" />
+          </div>
+          <h4 className="font-odia font-bold text-base text-amber-950">
+            ଅଧ୍ୟାପକ ସାମୟିକ ଭାବେ ଅଫଲାଇନ୍ ଅଛନ୍ତି...
+          </h4>
+          <p className="text-xs text-amber-800 font-medium leading-relaxed">
+            ଦୟାକରି କିଛି ସମୟ ଅପେକ୍ଷା କରନ୍ତୁ। ଅଧ୍ୟାପକ ଆପ୍ ପୁଣି ଖୋଲିବା ମାତ୍ରେ କୁଇଜ୍ ଏହି ପୃଷ୍ଠାରେ ଆପେ ଆପେ ଆରମ୍ଭ ହୋଇଯିବ।
+          </p>
+          <div className="inline-block px-3.5 py-1 rounded-full bg-amber-200/80 text-amber-900 text-xs font-bold">
+            ⏸️ କୁଇଜ୍ ସ୍ଥଗିତ ଅଛି (Session Paused)
+          </div>
+        </div>
+      )}
 
       {/* Main Question & Participation Card */}
       <div className="bg-white rounded-3xl p-5 sm:p-6 border border-slate-200 shadow-sm space-y-4">
@@ -516,13 +547,26 @@ export const StudentParticipationScreen: React.FC<StudentParticipationScreenProp
           </div>
         )}
 
-        {/* Options Section (Locked until Raise Hand is clicked) */}
+        {/* REQUIREMENT 2: LOCKED NOTICE AFTER SINGLE ANSWER CHOSEN */}
+        {hasAnswered && (
+          <div className="p-3 rounded-2xl bg-slate-100 border border-slate-300 text-center flex items-center justify-center gap-2 text-xs font-bold text-slate-700 animate-in fade-in-50">
+            <Lock className="w-4 h-4 text-slate-600" />
+            <span>ଆପଣଙ୍କ ଉତ୍ତର ଦାଖଲ ହୋଇଛି • ଗୋଟିଏ ପ୍ରଶ୍ନ ପାଇଁ ଥରେ ମାତ୍ର ବିକଳ୍ପ ବାଛିପାରିବେ</span>
+          </div>
+        )}
+
+        {/* Options Section (Locked until Raise Hand is clicked, and locked after 1 selection) */}
         {currentQuestion?.options && currentQuestion.options.length > 0 && (
           <div className="space-y-2.5 pt-2">
             <div className="flex items-center justify-between text-xs font-bold text-slate-500 px-1">
               <span>ବିକଳ୍ପ ଚୟନ (Options):</span>
-              <span className={`flex items-center gap-1 ${hasRaisedHand ? 'text-emerald-700 font-bold' : 'text-slate-400'}`}>
-                {hasRaisedHand ? (
+              <span className={`flex items-center gap-1 ${hasRaisedHand && !hasAnswered ? 'text-emerald-700 font-bold' : 'text-slate-400'}`}>
+                {hasAnswered ? (
+                  <>
+                    <Lock className="w-3.5 h-3.5 text-slate-500" />
+                    <span>ଉତ୍ତର ଦାଖଲ ହେଲା (Locked)</span>
+                  </>
+                ) : hasRaisedHand ? (
                   <>
                     <Unlock className="w-3.5 h-3.5" />
                     <span>ଅନ୍‌ଲକ୍ ହେଲା (Clickable)</span>
@@ -546,6 +590,7 @@ export const StudentParticipationScreen: React.FC<StudentParticipationScreenProp
                   <button
                     key={optIdx}
                     type="button"
+                    disabled={!hasRaisedHand || hasAnswered}
                     onClick={() => handleOptionClick(opt, optIdx)}
                     className={`p-3.5 rounded-2xl border-2 text-left font-medium transition-all flex items-center justify-between gap-3 select-none ${
                       !hasRaisedHand
@@ -554,12 +599,14 @@ export const StudentParticipationScreen: React.FC<StudentParticipationScreenProp
                         ? 'bg-emerald-600 text-white border-emerald-500 shadow-md ring-4 ring-emerald-300/60 scale-[1.01]'
                         : isWrongFeedback
                         ? 'bg-rose-50 text-rose-950 border-rose-500 ring-2 ring-rose-300'
+                        : hasAnswered
+                        ? 'bg-slate-50 border-slate-200 text-slate-400 cursor-not-allowed opacity-40'
                         : 'bg-slate-50 hover:bg-emerald-50 hover:border-emerald-400 border-slate-200 text-slate-800 active:scale-[0.98]'
                     }`}
                   >
                     <div className="flex items-center gap-3">
                       <span className={`w-7 h-7 rounded-full flex items-center justify-center font-bold text-xs shrink-0 transition-colors ${
-                        !hasRaisedHand
+                        !hasRaisedHand || (hasAnswered && !isSelected)
                           ? 'bg-slate-200 text-slate-400'
                           : isCorrectFeedback
                           ? 'bg-white text-emerald-900 shadow-xs'
@@ -569,7 +616,7 @@ export const StudentParticipationScreen: React.FC<StudentParticipationScreenProp
                       }`}>
                         {String.fromCharCode(65 + optIdx)}
                       </span>
-                      <span className={`text-sm font-semibold ${!hasRaisedHand ? 'text-slate-500' : ''}`}>
+                      <span className={`text-sm font-semibold ${!hasRaisedHand || (hasAnswered && !isSelected) ? 'text-slate-500' : ''}`}>
                         {opt}
                       </span>
                     </div>
@@ -587,7 +634,7 @@ export const StudentParticipationScreen: React.FC<StudentParticipationScreenProp
                           <span>ଭୁଲ୍</span>
                         </span>
                       )}
-                      {!hasRaisedHand && (
+                      {(!hasRaisedHand || (hasAnswered && !isSelected)) && (
                         <Lock className="w-4 h-4 text-slate-400" />
                       )}
                     </div>
