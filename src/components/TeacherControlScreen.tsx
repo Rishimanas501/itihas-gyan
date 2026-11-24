@@ -22,7 +22,9 @@ import {
   Sparkles,
   Trophy,
   ExternalLink,
-  Info
+  Info,
+  Share2,
+  Globe
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import type { Question, QuizSession, HandRaiseRecord, QuestionScoreRecord } from '../types';
@@ -73,8 +75,44 @@ export const TeacherControlScreen: React.FC<TeacherControlScreenProps> = ({
   // Question currently displayed
   const currentQuestion: Question | undefined = questions[currentQIndex];
 
-  // Join link for students
-  const joinUrl = `${window.location.origin}/?view=student&pin=${session.pin}`;
+  // Join link for students (auto-detect LAN IP from server so phone QR scan doesn't open 'localhost')
+  const [networkIp, setNetworkIp] = useState<string>('');
+  const [manualIp, setManualIp] = useState<string>('');
+  const [customOnlineUrl, setCustomOnlineUrl] = useState<string>(() => {
+    return localStorage.getItem('itihas_custom_online_url') || '';
+  });
+
+  useEffect(() => {
+    fetch('/api/info')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data) {
+          if (data.cloudflareUrl) {
+            setCustomOnlineUrl(data.cloudflareUrl);
+          }
+          if (data.localIp && data.localIp !== 'localhost' && data.localIp !== '127.0.0.1') {
+            setNetworkIp(data.localIp);
+            setManualIp(data.localIp);
+          }
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const activeHostIp = manualIp || networkIp;
+  const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+  const effectiveHost = (isLocalhost && activeHostIp)
+    ? `${activeHostIp}:${window.location.port || '3000'}`
+    : window.location.host;
+
+  const joinUrl = customOnlineUrl.trim()
+    ? `${customOnlineUrl.trim().replace(/\/$/, '')}/?view=student&pin=${session.pin}`
+    : `${window.location.protocol}//${effectiveHost}/?view=student&pin=${session.pin}`;
+
+  const shareOnWhatsApp = () => {
+    const text = `🏛️ *ଇତିହାସ ଜ୍ଞାନ (ITIHAS GYAN) - ଲାଇଭ୍ କ୍ଲାସ କୁଇଜ୍*\n\nସମସ୍ତ ଛାତ୍ରଛାତ୍ରୀ ଏହି ଲିଙ୍କ୍ ଉପରେ କ୍ଲିକ୍ କରି କୁଇଜ୍‌ରେ ଯୋଗ ଦିଅନ୍ତୁ (Google Meet ପରି):\n🔗 ${joinUrl}\n\n🔑 *Session PIN:* ${session.pin}`;
+    window.open(`https://api.whatsapp.com/send?text=${encodeURIComponent(text)}`, '_blank');
+  };
 
   // Initialize teacher session on mount
   useEffect(() => {
@@ -88,6 +126,15 @@ export const TeacherControlScreen: React.FC<TeacherControlScreenProps> = ({
     });
 
     const unsubStudents = realtimeService.on('student_list_updated', (data: any) => {
+      if (data && data.studentCount !== undefined) {
+        setStudentCount(data.studentCount);
+      }
+    });
+
+    const unsubState = realtimeService.on('session_state_updated', (data: any) => {
+      if (data && data.handRaises) {
+        setHandRaises(data.handRaises);
+      }
       if (data && data.studentCount !== undefined) {
         setStudentCount(data.studentCount);
       }
@@ -110,10 +157,30 @@ export const TeacherControlScreen: React.FC<TeacherControlScreenProps> = ({
       }
     });
 
+    // Dual-redundancy polling check every 2.5s to ensure 100% sync
+    const pollInterval = setInterval(() => {
+      if (!session.pin) return;
+      fetch(`/api/session/${session.pin}`)
+        .then((res) => res.json())
+        .then((data) => {
+          if (data && data.found) {
+            if (data.handRaises && Array.isArray(data.handRaises)) {
+              setHandRaises(data.handRaises);
+            }
+            if (data.studentCount !== undefined) {
+              setStudentCount(data.studentCount);
+            }
+          }
+        })
+        .catch(() => {});
+    }, 2500);
+
     return () => {
       unsubHandRaises();
       unsubStudents();
+      unsubState();
       unsubOptionClicked();
+      clearInterval(pollInterval);
     };
   }, [session.pin]);
 
@@ -344,6 +411,15 @@ export const TeacherControlScreen: React.FC<TeacherControlScreenProps> = ({
           >
             <Copy className="w-4 h-4 text-emerald-400" />
             <span>{copiedLink ? 'ଲିଙ୍କ୍ କପି ହେଲା!' : 'Join Link'}</span>
+          </button>
+
+          <button
+            onClick={shareOnWhatsApp}
+            className="px-3.5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-1.5 transition-colors shadow-xs"
+            title="Share direct join link to WhatsApp group"
+          >
+            <Share2 className="w-4 h-4" />
+            <span>WhatsApp ରେ ପଠାନ୍ତୁ</span>
           </button>
 
           <button
@@ -770,16 +846,62 @@ export const TeacherControlScreen: React.FC<TeacherControlScreenProps> = ({
       {/* QR Code Modal for Classroom Display */}
       {isQrModalOpen && (
         <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl max-w-sm w-full p-6 text-center space-y-4 shadow-2xl">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 text-center space-y-4 shadow-2xl">
             <h3 className="font-odia font-bold text-xl text-slate-900">
-              କୁଇଜ୍ ଯୋଗଦାନ QR କୋଡ୍
+              କୁଇଜ୍ ଯୋଗଦାନ QR କୋଡ୍ (Student Join)
             </h3>
             <p className="text-xs text-slate-500">
-              ମୋବାଇଲ୍ କ୍ୟାମେରା ଦ୍ୱାରା ସ୍କାନ୍ କରି ସିଧାସଳଖ ଯୋଗ ଦିଅନ୍ତୁ:
+              ମୋବାଇଲ୍ କ୍ୟାମେରା ବା Google Lens ଦ୍ୱାରା ସ୍କାନ୍ କରି ସିଧାସଳଖ ଯୋଗ ଦିଅନ୍ତୁ:
             </p>
 
             <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 inline-block shadow-inner">
               <QRCodeSVG value={joinUrl} size={220} level="M" />
+            </div>
+
+            {/* Direct Join Link & Copy */}
+            <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3 text-left space-y-2">
+              <div className="flex items-center justify-between text-[11px] font-bold text-slate-500">
+                <span>Google Meet ପରି Student Join Link:</span>
+              </div>
+              <div className="font-mono text-xs text-slate-800 break-all bg-white p-2.5 rounded-xl border border-slate-200 select-all font-semibold">
+                {joinUrl}
+              </div>
+
+              {/* Action Buttons: WhatsApp Share & Copy */}
+              <div className="flex gap-2 pt-1">
+                <button
+                  onClick={shareOnWhatsApp}
+                  className="flex-1 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center justify-center gap-1.5 transition-colors shadow-xs"
+                >
+                  <Share2 className="w-4 h-4" />
+                  <span>WhatsApp ରେ ପଠାନ୍ତୁ</span>
+                </button>
+                <button
+                  onClick={copyJoinLink}
+                  className="px-4 py-2.5 rounded-xl bg-white hover:bg-slate-100 text-slate-800 text-xs font-bold flex items-center justify-center gap-1.5 transition-colors border border-slate-300"
+                >
+                  <Copy className="w-4 h-4 text-emerald-600" />
+                  <span>{copiedLink ? 'କପି ହେଲା!' : 'Copy'}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Optional Online Public Link input */}
+            <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3 text-left space-y-1.5">
+              <div className="flex items-center gap-1.5 text-[11px] font-bold text-slate-600">
+                <Globe className="w-3.5 h-3.5 text-blue-600" />
+                <span>Custom Online Link (ଯଦି Tunnel ବା Cloud Link ଅଛି):</span>
+              </div>
+              <input
+                type="text"
+                placeholder="ଯଥା: https://xxxx.loca.lt କିମ୍ବା render ଲିଙ୍କ୍"
+                value={customOnlineUrl}
+                onChange={(e) => {
+                  setCustomOnlineUrl(e.target.value);
+                  localStorage.setItem('itihas_custom_online_url', e.target.value);
+                }}
+                className="w-full text-xs p-2 bg-white border border-slate-300 rounded-xl font-mono focus:ring-2 focus:ring-emerald-500 outline-none text-slate-800"
+              />
             </div>
 
             <div className="space-y-1">
@@ -789,9 +911,20 @@ export const TeacherControlScreen: React.FC<TeacherControlScreenProps> = ({
               </div>
             </div>
 
+            {/* Wi-Fi Alert / Help info */}
+            <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 text-left text-xs text-amber-900 space-y-1">
+              <div className="font-bold flex items-center gap-1.5 text-amber-950">
+                <Info className="w-4 h-4 text-amber-600 shrink-0" />
+                <span>ସୂଚନା (Wi-Fi Requirement):</span>
+              </div>
+              <p className="text-[11px] text-amber-800 leading-relaxed">
+                ଶିକ୍ଷକଙ୍କ କମ୍ପ୍ୟୁଟର ଏବଂ ଛାତ୍ରଙ୍କ ମୋବାଇଲ୍ <strong>ଗୋଟିଏ Wi-Fi କିମ୍ବା ମୋବାଇଲ୍ ହଟସ୍ପଟ୍</strong> ସହ କନେକ୍ଟ ଥିବା ଦରକାର।
+              </p>
+            </div>
+
             <button
               onClick={() => setIsQrModalOpen(false)}
-              className="w-full py-2.5 rounded-xl bg-slate-900 text-white text-xs font-bold"
+              className="w-full py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold transition-colors"
             >
               ବନ୍ଦ କରନ୍ତୁ (Close)
             </button>

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Sparkles, 
   Check, 
@@ -10,20 +10,21 @@ import {
   AlertCircle, 
   HelpCircle, 
   CheckCircle2, 
-  X,
-  FileText,
-  Play,
-  ClipboardPaste,
-  Wand2
+  X, 
+  FileText, 
+  Play, 
+  ClipboardPaste, 
+  Wand2 
 } from 'lucide-react';
 import { db } from '../db';
-import type { Question, QuestionPattern, QuestionLanguage } from '../types';
+import type { Question, QuestionPattern, QuestionLanguage, Paper, Chapter } from '../types';
 import { generateQuestionsFromSource, parseAndConvertPastedText } from '../services/aiGenerator';
 
 interface AiGeneratorScreenProps {
   onBack: () => void;
   geminiApiKey?: string;
   onNavigateToBank: () => void;
+  onNavigateToChat?: () => void;
   onStartLiveQuizWithQuestions?: (questions: Question[]) => void;
 }
 
@@ -55,6 +56,7 @@ export const AiGeneratorScreen: React.FC<AiGeneratorScreenProps> = ({
   onBack,
   geminiApiKey,
   onNavigateToBank,
+  onNavigateToChat,
   onStartLiveQuizWithQuestions
 }) => {
   // Mode selection
@@ -72,9 +74,51 @@ export const AiGeneratorScreen: React.FC<AiGeneratorScreenProps> = ({
     'mcq', 'blanks', 'true_false', 'one_word', 'short'
   ]);
   const [questionCount, setQuestionCount] = useState(5);
-
-  // Generation state
   const [isGenerating, setIsGenerating] = useState(false);
+
+  // Paper & Chapter states
+  const [papers, setPapers] = useState<Paper[]>([]);
+  const [chapters, setChapters] = useState<Chapter[]>([]);
+  const [selectedPaperId, setSelectedPaperId] = useState<string>('');
+  const [selectedChapterId, setSelectedChapterId] = useState<string>('');
+
+  useEffect(() => {
+    const loadHierarchy = async () => {
+      const pList = await db.papers.orderBy('order').toArray();
+      const cList = await db.chapters.orderBy('order').toArray();
+      setPapers(pList);
+      setChapters(cList);
+      if (pList.length > 0) {
+        setSelectedPaperId(pList[0].id);
+        setPaper(pList[0].name);
+        setSubject(pList[0].subject);
+        if (pList[0].semester) setSemester(pList[0].semester);
+        const chs = cList.filter(c => c.paperId === pList[0].id);
+        if (chs.length > 0) {
+          setSelectedChapterId(chs[0].id);
+          setTopic(chs[0].name);
+        }
+      }
+    };
+    loadHierarchy();
+  }, []);
+
+  const handlePaperChange = (pId: string) => {
+    setSelectedPaperId(pId);
+    const p = papers.find(item => item.id === pId);
+    if (p) {
+      setPaper(p.name);
+      setSubject(p.subject);
+      if (p.semester) setSemester(p.semester);
+    }
+    const chs = chapters.filter(c => c.paperId === pId);
+    if (chs.length > 0) {
+      setSelectedChapterId(chs[0].id);
+      setTopic(chs[0].name);
+    } else {
+      setSelectedChapterId('');
+    }
+  };
   const [generatedQuestions, setGeneratedQuestions] = useState<Question[]>([]);
   const [selectedIndices, setSelectedIndices] = useState<number[]>([]);
   const [editingQuestion, setEditingQuestion] = useState<{ index: number; q: Question } | null>(null);
@@ -194,8 +238,15 @@ export const AiGeneratorScreen: React.FC<AiGeneratorScreenProps> = ({
           continue;
         }
 
+        const selectedPaperObj = papers.find(p => p.id === selectedPaperId);
+        const selectedChapObj = chapters.find(c => c.id === selectedChapterId);
+
         await db.questions.add({
           ...q,
+          paperId: selectedPaperId || 'paper_ancient_india',
+          chapterId: selectedChapterId || 'chap_indus_valley',
+          paper: selectedPaperObj?.name || q.paper || 'History',
+          chapter: selectedChapObj?.name || q.chapter || 'Chapter',
           approved: true,
           updatedAt: new Date().toISOString()
         });
@@ -260,7 +311,7 @@ export const AiGeneratorScreen: React.FC<AiGeneratorScreenProps> = ({
           </div>
           <div>
             <h2 className="font-odia font-black text-2xl text-slate-900">
-              ୨. AI ସାହାଯ୍ୟରେ ପ୍ରଶ୍ନ ପ୍ରସ୍ତୁତି
+              AI ସାହାଯ୍ୟରେ ପ୍ରଶ୍ନ ପ୍ରସ୍ତୁତି
             </h2>
             <p className="font-heading font-semibold text-xs uppercase text-slate-500">
               AI Question Generator & Approval Workflow
@@ -268,13 +319,25 @@ export const AiGeneratorScreen: React.FC<AiGeneratorScreenProps> = ({
           </div>
         </div>
 
-        <button
-          onClick={onNavigateToBank}
-          className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 text-xs font-bold shadow-xs active:scale-95 transition-all"
-        >
-          <BookOpen className="w-4 h-4 text-emerald-700" />
-          <span>ପ୍ରଶ୍ନ ବ୍ୟାଙ୍କ୍ (Question Bank)</span>
-        </button>
+        <div className="flex items-center gap-2">
+          {onNavigateToChat && (
+            <button
+              onClick={onNavigateToChat}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 text-xs font-bold shadow-xs active:scale-95 transition-all"
+            >
+              <Sparkles className="w-4 h-4 text-blue-600" />
+              <span>AI ସହ ଚାଟ୍ (Chat with AI)</span>
+            </button>
+          )}
+
+          <button
+            onClick={onNavigateToBank}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 text-xs font-bold shadow-xs active:scale-95 transition-all"
+          >
+            <BookOpen className="w-4 h-4 text-emerald-700" />
+            <span>ପ୍ରଶ୍ନ ବ୍ୟାଙ୍କ୍ (Question Bank)</span>
+          </button>
+        </div>
       </div>
 
       {/* Mode Switcher Tabs */}
@@ -348,19 +411,50 @@ export const AiGeneratorScreen: React.FC<AiGeneratorScreenProps> = ({
           )}
         </div>
 
-        {/* Filters and Meta Details */}
+        {/* Paper & Chapter Destination Selection */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
           <div>
-            <label className="block text-[11px] font-bold text-slate-600 uppercase mb-1">ବିଷୟ (Subject)</label>
-            <input
-              type="text"
-              value={subject}
-              onChange={(e) => setSubject(e.target.value)}
-              className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 font-medium"
-            />
+            <label className="block text-[11px] font-bold text-slate-600 uppercase mb-1">
+              ପେପର (Target Paper) *
+            </label>
+            <select
+              value={selectedPaperId}
+              onChange={(e) => handlePaperChange(e.target.value)}
+              className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 font-bold bg-slate-50"
+            >
+              {papers.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name} ({p.nameOdia || p.code})
+                </option>
+              ))}
+            </select>
           </div>
+
           <div>
-            <label className="block text-[11px] font-bold text-slate-600 uppercase mb-1">ସେମିଷ୍ଟାର (Semester)</label>
+            <label className="block text-[11px] font-bold text-slate-600 uppercase mb-1">
+              ଅଧ୍ୟାୟ (Target Chapter) *
+            </label>
+            <select
+              value={selectedChapterId}
+              onChange={(e) => {
+                setSelectedChapterId(e.target.value);
+                const ch = chapters.find(c => c.id === e.target.value);
+                if (ch) setTopic(ch.name);
+              }}
+              className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 font-bold bg-slate-50"
+            >
+              {chapters.filter(c => c.paperId === selectedPaperId).map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name} ({c.nameOdia})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-[11px] font-bold text-slate-600 uppercase mb-1">
+              ସେମିଷ୍ଟାର (Semester)
+            </label>
             <select
               value={semester}
               onChange={(e) => setSemester(e.target.value)}
@@ -374,17 +468,11 @@ export const AiGeneratorScreen: React.FC<AiGeneratorScreenProps> = ({
               <option value="6th Semester">6th Semester</option>
             </select>
           </div>
+
           <div>
-            <label className="block text-[11px] font-bold text-slate-600 uppercase mb-1">ପ୍ରସଙ୍ଗ (Topic)</label>
-            <input
-              type="text"
-              value={topic}
-              onChange={(e) => setTopic(e.target.value)}
-              className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 font-medium"
-            />
-          </div>
-          <div>
-            <label className="block text-[11px] font-bold text-slate-600 uppercase mb-1">ଭାଷା (Language)</label>
+            <label className="block text-[11px] font-bold text-slate-600 uppercase mb-1">
+              ଭାଷା (Language)
+            </label>
             <select
               value={language}
               onChange={(e) => setLanguage(e.target.value as any)}

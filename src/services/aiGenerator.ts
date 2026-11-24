@@ -43,6 +43,41 @@ export async function generateQuestionsFromSource(options: GenerateOptions): Pro
  * Automatically analyzes any pasted questions (MCQ, Fill in the Blanks, True/False, One-Word, Short Q&A)
  * whether in Odia, English, or mixed format, extracts options, correct answers, and generates missing explanations.
  */
+export function normalizeQuestionForComparison(text: string): string {
+  if (!text) return '';
+  return text
+    .toLowerCase()
+    .replace(/^(?:(?:q(?:uestion|\.|\:)?\s*[\d୧-୯]+[\.\:\-]?)|(?:[\d୧-୯]+[\.\)\-]))\s*/i, '')
+    .replace(/^ପ୍ରଶ୍ନ\s*[\d୧-୯]+[\.\:\-]?\s*/i, '')
+    .replace(/[\s\p{P}\p{S}]+/gu, '')
+    .trim();
+}
+
+export function checkQuestionDuplicate(
+  newQText: string,
+  existingList: { question: string }[]
+): { isDuplicate: boolean; matchedQuestion?: string } {
+  const normNew = normalizeQuestionForComparison(newQText);
+  if (!normNew || normNew.length < 5) return { isDuplicate: false };
+
+  for (const item of existingList) {
+    const normExisting = normalizeQuestionForComparison(item.question);
+    if (!normExisting || normExisting.length < 5) continue;
+
+    if (normNew === normExisting) {
+      return { isDuplicate: true, matchedQuestion: item.question };
+    }
+
+    if (normNew.length > 20 && normExisting.length > 20) {
+      if (normNew.includes(normExisting) || normExisting.includes(normNew)) {
+        return { isDuplicate: true, matchedQuestion: item.question };
+      }
+    }
+  }
+
+  return { isDuplicate: false };
+}
+
 export function parseAndConvertPastedText(rawText: string, meta: Partial<Question>): Question[] {
   if (!rawText || !rawText.trim()) return [];
 

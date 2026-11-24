@@ -9,8 +9,10 @@ import {
   Medal, 
   Flame, 
   CheckCircle2, 
-  XCircle 
+  XCircle,
+  QrCode
 } from 'lucide-react';
+import { QRCodeSVG } from 'qrcode.react';
 import { BrandHeader } from './BrandHeader';
 import type { Question, QuizSession, HandRaiseRecord } from '../types';
 import { realtimeService } from '../services/socketService';
@@ -34,6 +36,33 @@ export const PresentationScreen: React.FC<PresentationScreenProps> = ({
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showLeaderboard, setShowLeaderboard] = useState(false);
   const [leaderboard, setLeaderboard] = useState<any[]>([]);
+  const [isQrModalOpen, setIsQrModalOpen] = useState(false);
+  const [networkIp, setNetworkIp] = useState<string>('');
+  const [onlineUrl, setOnlineUrl] = useState<string>('');
+
+  useEffect(() => {
+    fetch('/api/info')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data) {
+          if (data.cloudflareUrl) {
+            setOnlineUrl(data.cloudflareUrl);
+          }
+          if (data.localIp && data.localIp !== 'localhost' && data.localIp !== '127.0.0.1') {
+            setNetworkIp(data.localIp);
+          }
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+  const effectiveHost = (isLocalhost && networkIp)
+    ? `${networkIp}:${window.location.port || '3000'}`
+    : window.location.host;
+  const joinUrl = onlineUrl
+    ? `${onlineUrl.replace(/\/$/, '')}/?view=student&pin=${initialSession.pin}`
+    : `${window.location.protocol}//${effectiveHost}/?view=student&pin=${initialSession.pin}`;
 
   // Interactive option click state: ONLY 1 option is highlighted at a time
   const [clickedOptions, setClickedOptions] = useState<{ [index: number]: 'correct' | 'wrong' }>({});
@@ -209,10 +238,17 @@ export const PresentationScreen: React.FC<PresentationScreenProps> = ({
             </span>
           </div>
 
-          {/* Session PIN */}
+          {/* Session PIN & QR */}
           <div className="hidden sm:flex items-center gap-2 bg-slate-800/80 px-3.5 py-1.5 rounded-2xl border border-slate-700 font-mono">
             <span className="text-xs text-slate-400 font-bold">PIN:</span>
             <span className="text-base sm:text-lg font-black text-amber-400 tracking-widest">{initialSession.pin}</span>
+            <button
+              onClick={() => setIsQrModalOpen(true)}
+              className="ml-1 p-1 rounded-lg bg-slate-700 hover:bg-slate-600 text-amber-300 transition-colors"
+              title="Show QR Code on Screen"
+            >
+              <QrCode className="w-4 h-4" />
+            </button>
           </div>
 
           {/* Leaderboard Toggle */}
@@ -493,6 +529,42 @@ export const PresentationScreen: React.FC<PresentationScreenProps> = ({
           )}
         </div>
       </div>
+
+      {/* Classroom Projector QR Code Modal */}
+      {isQrModalOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 text-center space-y-4 shadow-2xl">
+            <h3 className="font-odia font-bold text-2xl text-slate-900">
+              କୁଇଜ୍ ଯୋଗଦାନ QR କୋଡ୍
+            </h3>
+            <p className="text-xs text-slate-500">
+              ନିଜ ମୋବାଇଲ୍ କ୍ୟାମେରା ବା Google Lens ଦ୍ୱାରା ଏହି QR Code କୁ ସ୍କାନ୍ କରନ୍ତୁ:
+            </p>
+
+            <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 inline-block shadow-inner">
+              <QRCodeSVG value={joinUrl} size={240} level="M" />
+            </div>
+
+            <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-200 text-xs font-mono text-slate-700 break-all select-all">
+              {joinUrl}
+            </div>
+
+            <div className="space-y-1">
+              <div className="text-xs text-slate-400 font-bold uppercase">SESSION PIN</div>
+              <div className="font-mono text-3xl font-black text-emerald-800 tracking-widest">
+                {initialSession.pin}
+              </div>
+            </div>
+
+            <button
+              onClick={() => setIsQrModalOpen(false)}
+              className="w-full py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold transition-colors"
+            >
+              ବନ୍ଦ କରନ୍ତୁ (Close)
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

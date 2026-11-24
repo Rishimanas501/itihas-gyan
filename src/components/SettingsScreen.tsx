@@ -56,7 +56,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           </div>
           <div>
             <h2 className="font-odia font-black text-2xl text-slate-900">
-              ୭. ସେଟିଙ୍ଗ୍ସ ଏବଂ ସଂଯୋଜନା
+              ସେଟିଙ୍ଗ୍ସ ଏବଂ ସଂଯୋଜନା
             </h2>
             <p className="font-heading font-semibold text-xs uppercase text-slate-500">
               Application Configuration & Downloads
@@ -99,29 +99,97 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           </div>
         </div>
 
-        {/* AI & Gemini Configuration */}
-        <div className="bg-white rounded-3xl p-6 border border-slate-200 shadow-xs space-y-4">
+        {/* AI & Multimodal Providers Configuration */}
+        <div className="bg-white rounded-3xl p-6 border border-slate-200 shadow-xs space-y-5">
           <div className="flex items-center gap-2 pb-2 border-b border-slate-100">
-            <Key className="w-4 h-4 text-amber-600" />
-            <h3 className="font-odia font-bold text-lg text-slate-900">
-              Google Gemini AI API Key (ପ୍ରଶ୍ନ ପ୍ରସ୍ତୁତି ପାଇଁ)
-            </h3>
+            <Sparkles className="w-5 h-5 text-purple-600" />
+            <div>
+              <h3 className="font-odia font-bold text-lg text-slate-900">
+                AI ସହାୟକ ଓ ପ୍ରୋଭାଇଡର୍ ସଂଯୋଜନା (AI Providers & Vision Keys)
+              </h3>
+              <p className="text-xs text-slate-500 font-heading">
+                Multimodal Image Analysis, Document Reading, and Historical Research
+              </p>
+            </div>
           </div>
 
-          <div>
-            <label className="block text-xs font-bold text-slate-700 uppercase mb-1">
-              Gemini API Key
-            </label>
-            <input
-              type="password"
-              placeholder="AIzaSy..."
-              value={settings.geminiApiKey}
-              onChange={(e) => setSettings({ ...settings, geminiApiKey: e.target.value })}
-              className="w-full px-3.5 py-2 rounded-xl border border-slate-200 text-sm font-mono"
-            />
-            <p className="text-[11px] text-slate-400 mt-1">
-              API key ନଥିଲେ ମଧ୍ୟ ଆପ୍ଲିକେସନ୍ ଭିତରେ ଥିବା ଅଫଲାଇନ୍ ହିଷ୍ଟ୍ରି NLP ଜେନେରେଟର ସ୍ୱୟଂଚାଳିତ ଭାବେ କାର୍ଯ୍ୟ କରିବ।
-            </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-bold text-slate-700 uppercase mb-1">
+                ପ୍ରାଥମିକ AI ପ୍ରୋଭାଇଡର୍ (Default Provider)
+              </label>
+              <select
+                value={settings.defaultAiProvider || 'existing'}
+                onChange={(e) => setSettings({ ...settings, defaultAiProvider: e.target.value as any })}
+                className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-xs font-semibold"
+              >
+                <option value="existing">Existing AI (Offline Built-in - No Key Required)</option>
+                <option value="gemini">Google Gemini (Official Multimodal API)</option>
+                <option value="openai">OpenAI ChatGPT (Official OpenAI API)</option>
+              </select>
+              <p className="text-[11px] text-slate-400 mt-1">
+                Existing AI ସର୍ବଦା ମାଗଣା ଏବଂ ବିନା ଇଣ୍ଟରନେଟ୍/କି’ ରେ କାର୍ଯ୍ୟକ୍ଷମ।
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-700 uppercase mb-1">
+                ଡିଫଲ୍ଟ AI ମଡେଲ୍ (Default Model)
+              </label>
+              <select
+                value={settings.defaultAiModel || 'existing-history-nlp'}
+                onChange={(e) => setSettings({ ...settings, defaultAiModel: e.target.value })}
+                className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-xs font-semibold"
+              >
+                <option value="existing-history-nlp">Existing AI: Odisha & Indian History NLP (Offline)</option>
+                <option value="gemini-1.5-flash">Gemini 1.5 Flash (Fast Vision & Docs)</option>
+                <option value="gemini-1.5-pro">Gemini 1.5 Pro (Deep Multimodal Analysis)</option>
+                <option value="gemini-2.0-flash">Gemini 2.0 Flash (Next-Gen)</option>
+                <option value="gpt-4o">OpenAI GPT-4o (Vision & Documents)</option>
+                <option value="gpt-4o-mini">OpenAI GPT-4o Mini (Cost Effective)</option>
+              </select>
+            </div>
+
+            <div className="space-y-1">
+              <label className="block text-xs font-bold text-slate-700 uppercase flex items-center gap-1.5">
+                <Key className="w-3.5 h-3.5 text-blue-600" />
+                <span>Google Gemini API Key (Optional)</span>
+              </label>
+              <input
+                type="password"
+                placeholder="AIzaSy..."
+                value={settings.geminiApiKey || ''}
+                onChange={(e) => setSettings({ ...settings, geminiApiKey: e.target.value })}
+                className="w-full px-3.5 py-2 rounded-xl border border-slate-200 text-xs font-mono"
+              />
+              <p className="text-[10px] text-slate-400">
+                ଚିତ୍ର ଓ PDF ବିଶ୍ଳେଷଣ ପାଇଁ Google AI Studio ରୁ ମାଗଣାରେ API Key ପାଇପାରିବେ।
+              </p>
+            </div>
+
+            <div className="space-y-1">
+              <label className="block text-xs font-bold text-slate-700 uppercase flex items-center gap-1.5">
+                <Key className="w-3.5 h-3.5 text-emerald-600" />
+                <span>OpenAI ChatGPT API Key (Optional)</span>
+              </label>
+              <input
+                type="password"
+                placeholder="sk-proj-..."
+                value={settings.openaiApiKey || ''}
+                onChange={(e) => setSettings({ ...settings, openaiApiKey: e.target.value })}
+                className="w-full px-3.5 py-2 rounded-xl border border-slate-200 text-xs font-mono"
+              />
+              <p className="text-[10px] text-slate-400">
+                OpenAI Developer Platform ରୁ API key ସଂଯୋଜିତ କରନ୍ତୁ।
+              </p>
+            </div>
+          </div>
+
+          <div className="p-3 rounded-2xl bg-amber-50 border border-amber-200/80 text-[11px] text-amber-800 flex items-start gap-2.5">
+            <ShieldCheck className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+            <div>
+              <strong>ସୁରକ୍ଷା ନିଶ୍ଚିତତା (Security Guarantee):</strong> ଆପଣଙ୍କର API Key କେବଳ ଆପଣଙ୍କ ବ୍ରାଉଜର୍ / ଲୋକାଲ୍ ସର୍ଭରରେ ସୁରକ୍ଷିତ ଭାବେ ରହେ। କୌଣସି ପାସୱାର୍ଡ୍ କିମ୍ବା ପେମେଣ୍ଟ ତଥ୍ୟ ଆବଶ୍ୟକ ନାହିଁ ଏବଂ କୌଣସି ବାହ୍ୟ ସର୍ଭରରେ ପ୍ରକାଶ ପାଏ ନାହିଁ।
+            </div>
           </div>
         </div>
 

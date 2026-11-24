@@ -122,7 +122,7 @@ export const BackupRestoreScreen: React.FC<BackupRestoreScreenProps> = ({ onBack
           </div>
           <div>
             <h2 className="font-odia font-black text-2xl text-slate-900">
-              ୬. ବ୍ୟାକ୍ଅପ୍ ଏବଂ ରିଷ୍ଟୋର୍
+              ବ୍ୟାକ୍ଅପ୍ ଏବଂ ରିଷ୍ଟୋର୍
             </h2>
             <p className="font-heading font-semibold text-xs uppercase text-slate-500">
               Complete Application Backup, Data Protection & Restore

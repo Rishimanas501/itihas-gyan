@@ -149,7 +149,7 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({ onBack }) => {
           </div>
           <div>
             <h2 className="font-odia font-black text-2xl text-slate-900">
-              ୫. ରିପୋର୍ଟ୍ସ ଏବଂ ଫଳାଫଳ
+              ରିପୋର୍ଟ୍ସ ଏବଂ ଫଳାଫଳ
             </h2>
             <p className="font-heading font-semibold text-xs uppercase text-slate-500">
               Classroom Quiz Reports & Academic Evaluation

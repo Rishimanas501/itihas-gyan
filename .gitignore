@@ -27,3 +27,11 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Binaries and local files
+cloudflared.exe
+*.exe
+*.xlsx
+src_backup_chat_upgrade/
+*.bat
+

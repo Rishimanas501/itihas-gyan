@@ -3,27 +3,31 @@ import {
   Hand, 
   CheckCircle2, 
   AlertCircle, 
-  UserCheck, 
+  XCircle,
+  Lock,
+  Unlock,
   Sparkles, 
   Trophy, 
   ArrowRight,
   LogOut,
-  Clock
+  HelpCircle
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { BrandHeader } from './BrandHeader';
 import { realtimeService } from '../services/socketService';
 import { db } from '../db';
-import type { Student } from '../types';
+import type { Question } from '../types';
 
 interface StudentParticipationScreenProps {
   initialPin?: string;
   onExit: () => void;
+  isStandalone?: boolean;
 }
 
 export const StudentParticipationScreen: React.FC<StudentParticipationScreenProps> = ({
   initialPin = '',
-  onExit
+  onExit,
+  isStandalone = false
 }) => {
   // Join step state
   const [pin, setPin] = useState(initialPin);
@@ -35,12 +39,27 @@ export const StudentParticipationScreen: React.FC<StudentParticipationScreenProp
 
   // Live session state for student
   const [sessionTitle, setSessionTitle] = useState('ଇତିହାସ ଜ୍ଞାନ ଲାଇଭ୍ କୁଇଜ୍');
-  const [currentQuestion, setCurrentQuestion] = useState<any>(null);
+  const [currentQuestion, setCurrentQuestion] = useState<Question | null>(null);
+  const [allQuestions, setAllQuestions] = useState<Question[]>([]);
   const [questionIndex, setQuestionIndex] = useState(0);
   const [hasRaisedHand, setHasRaisedHand] = useState(false);
   const [assignedRank, setAssignedRank] = useState<number | null>(null);
   const [myScore, setMyScore] = useState(0);
   const [revealAnswer, setRevealAnswer] = useState(false);
+  const [isServerConnected, setIsServerConnected] = useState(realtimeService.isSocketConnected());
+
+  // Interactive option click state on student mobile
+  const [selectedOption, setSelectedOption] = useState<number | null>(null);
+  const [optionFeedback, setOptionFeedback] = useState<{ isCorrect: boolean; text: string; explanation: string } | null>(null);
+  const [showRaiseAlert, setShowRaiseAlert] = useState(false);
+
+  // Track realtime socket connection state
+  useEffect(() => {
+    const unsubConn = realtimeService.on('connection_status', (data: any) => {
+      setIsServerConnected(!!data?.connected);
+    });
+    return () => unsubConn();
+  }, []);
 
   // Auto lookup student name when roll number is entered (Part 5 requirement)
   useEffect(() => {
@@ -57,16 +76,71 @@ export const StudentParticipationScreen: React.FC<StudentParticipationScreenProp
     }
   }, [rollNo]);
 
+  // Direct fetch session details upon joining or pin change
+  useEffect(() => {
+    if (!isJoined || !pin.trim()) return;
+
+    const fetchSession = () => {
+      fetch(`/api/session/${pin.trim()}`)
+        .then((res) => res.json())
+        .then((data) => {
+          if (data && data.found) {
+            if (data.currentQuestionIndex !== undefined) {
+              setQuestionIndex(data.currentQuestionIndex);
+            }
+            if (data.title) {
+              setSessionTitle(data.title);
+            }
+            if (data.questions && Array.isArray(data.questions)) {
+              setAllQuestions(data.questions);
+              const q = data.currentQuestion || data.questions[data.currentQuestionIndex || 0];
+              if (q) setCurrentQuestion(q);
+            } else if (data.currentQuestion) {
+              setCurrentQuestion(data.currentQuestion);
+            }
+            if (data.handRaises && Array.isArray(data.handRaises)) {
+              const found = data.handRaises.find((h: any) => h.rollNo === rollNo.trim());
+              if (found) {
+                setHasRaisedHand(true);
+                setAssignedRank(found.rank);
+              }
+            }
+          }
+        })
+        .catch(() => {});
+    };
+
+    fetchSession();
+    const interval = setInterval(fetchSession, 3000);
+    return () => clearInterval(interval);
+  }, [isJoined, pin, rollNo]);
+
   // Realtime subscriptions once joined
   useEffect(() => {
     if (!isJoined) return;
 
     const unsubQ = realtimeService.on('question_changed', (data: any) => {
       if (data) {
-        setQuestionIndex(data.currentQuestionIndex);
+        const newIndex = data.currentQuestionIndex ?? 0;
+        setQuestionIndex(newIndex);
         setHasRaisedHand(false);
         setAssignedRank(null);
         setRevealAnswer(false);
+        setSelectedOption(null);
+        setOptionFeedback(null);
+        setShowRaiseAlert(false);
+
+        if (data.currentQuestion) {
+          setCurrentQuestion(data.currentQuestion);
+        } else if (data.questions && data.questions[newIndex]) {
+          setCurrentQuestion(data.questions[newIndex]);
+        } else if (allQuestions[newIndex]) {
+          setCurrentQuestion(allQuestions[newIndex]);
+        }
+
+        if (data.questions && Array.isArray(data.questions)) {
+          setAllQuestions(data.questions);
+        }
       }
     });
 
@@ -80,13 +154,59 @@ export const StudentParticipationScreen: React.FC<StudentParticipationScreenProp
       const { status, rank } = e.detail || {};
       if (status === 'success' || rank) {
         setHasRaisedHand(true);
-        setAssignedRank(rank);
+        if (rank) setAssignedRank(rank);
         confetti({ particleCount: 50, spread: 60, origin: { y: 0.8 } });
       } else if (status === 'already_raised') {
         setHasRaisedHand(true);
       }
     };
     window.addEventListener('raise_hand_ack', unsubAck);
+
+    const unsubHands = realtimeService.on('hand_raises_updated', (data: any) => {
+      if (data && data.handRaises && Array.isArray(data.handRaises)) {
+        const found = data.handRaises.find((h: any) => h.rollNo === rollNo.trim());
+        if (found) {
+          setHasRaisedHand(true);
+          setAssignedRank(found.rank);
+        }
+      }
+    });
+
+    const unsubJoinSuccess = realtimeService.on('join_success', (data: any) => {
+      if (data && data.session) {
+        const s = data.session;
+        if (s.currentQuestionIndex !== undefined) {
+          setQuestionIndex(s.currentQuestionIndex);
+        }
+        if (s.title) {
+          setSessionTitle(s.title);
+        }
+        if (s.questions && Array.isArray(s.questions)) {
+          setAllQuestions(s.questions);
+          const q = s.questions[s.currentQuestionIndex || 0];
+          if (q) setCurrentQuestion(q);
+        }
+        if (s.handRaises && Array.isArray(s.handRaises)) {
+          const found = s.handRaises.find((h: any) => h.rollNo === rollNo.trim());
+          if (found) {
+            setHasRaisedHand(true);
+            setAssignedRank(found.rank);
+          }
+        }
+      }
+    });
+
+    // Option evaluated by teacher or classroom interaction
+    const unsubOption = realtimeService.on('option_clicked', (data: any) => {
+      if (data && data.optIndex !== undefined) {
+        setSelectedOption(data.optIndex);
+        setOptionFeedback({
+          isCorrect: data.isCorrect,
+          text: data.optionText,
+          explanation: data.explanation
+        });
+      }
+    });
 
     const unsubScore = realtimeService.on('marks_awarded', (data: any) => {
       if (data && data.rollNo === rollNo) {
@@ -100,10 +220,13 @@ export const StudentParticipationScreen: React.FC<StudentParticipationScreenProp
     return () => {
       unsubQ();
       unsubReveal();
+      unsubHands();
+      unsubJoinSuccess();
+      unsubOption();
       window.removeEventListener('raise_hand_ack', unsubAck);
       unsubScore();
     };
-  }, [isJoined, rollNo]);
+  }, [isJoined, rollNo, allQuestions]);
 
   const handleJoin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -122,6 +245,60 @@ export const StudentParticipationScreen: React.FC<StudentParticipationScreenProp
     if (hasRaisedHand) return; // prevent spam
     realtimeService.raiseHand(pin.trim(), rollNo.trim(), studentName || rollNo.trim());
     setHasRaisedHand(true);
+    setShowRaiseAlert(false);
+  };
+
+  // Student Option Click evaluation
+  const handleOptionClick = (opt: string, optIdx: number) => {
+    // REQUIREMENT: "jab tab raise hand pe click nahin karega to woh answer ke option par click karnese kuch bhi nahin hoga."
+    if (!hasRaisedHand) {
+      setShowRaiseAlert(true);
+      setTimeout(() => setShowRaiseAlert(false), 3000);
+      return;
+    }
+
+    if (!currentQuestion) return;
+
+    const normalizedOpt = opt.trim().toLowerCase();
+    const normalizedCorrect = (currentQuestion.correctAnswer || '').trim().toLowerCase();
+    const optLetter = String.fromCharCode(65 + optIdx).toLowerCase();
+
+    const isCorrect = (
+      normalizedOpt === normalizedCorrect ||
+      normalizedCorrect === optLetter ||
+      normalizedCorrect.startsWith(optLetter + '.') ||
+      normalizedCorrect.startsWith(optLetter + ')') ||
+      normalizedCorrect.startsWith(`(${optLetter})`) ||
+      normalizedOpt.includes(normalizedCorrect) ||
+      normalizedCorrect.includes(normalizedOpt)
+    );
+
+    let explanation = '';
+    if (isCorrect) {
+      explanation = currentQuestion.explanationCorrect || 'ସଠିକ୍ ଉତ୍ତର (Correct Answer)';
+    } else {
+      if (currentQuestion.explanationIncorrect && currentQuestion.explanationIncorrect[optIdx]) {
+        explanation = currentQuestion.explanationIncorrect[optIdx];
+      } else {
+        explanation = currentQuestion.correctAnswer 
+          ? `ଭୁଲ୍ ବିକଳ୍ପ। ସଠିକ୍ ଉତ୍ତର: ${currentQuestion.correctAnswer}` 
+          : 'ଭୁଲ୍ ବିକଳ୍ପ (Incorrect Answer)';
+      }
+    }
+
+    setSelectedOption(optIdx);
+    setOptionFeedback({
+      isCorrect,
+      text: opt,
+      explanation
+    });
+
+    if (isCorrect) {
+      confetti({ particleCount: 60, spread: 70, origin: { y: 0.7 } });
+    }
+
+    // Broadcast option click to teacher screen & presentation panel
+    realtimeService.clickOption(pin.trim(), optIdx, opt, isCorrect, explanation);
   };
 
   // View 1: Student Join Screen
@@ -131,6 +308,12 @@ export const StudentParticipationScreen: React.FC<StudentParticipationScreenProp
         <div className="max-w-md w-full bg-white rounded-3xl p-6 sm:p-8 shadow-xl border border-slate-200 space-y-6">
           <div className="text-center space-y-2">
             <BrandHeader size="md" align="center" />
+            <div className="flex items-center justify-center gap-1.5 mt-1">
+              <span className={`w-2 h-2 rounded-full ${isServerConnected ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`}></span>
+              <span className="text-[11px] font-semibold text-slate-600">
+                {isServerConnected ? 'ଲାଇଭ୍ ସଂଯୁକ୍ତ (Server Online)' : 'ସର୍ଭର ସଂଯୋଗ ଚାଲିଛି...'}
+              </span>
+            </div>
             <div className="inline-block px-3 py-1 rounded-full bg-emerald-100 text-emerald-900 text-xs font-bold uppercase mt-2">
               ଛାତ୍ର ଯୋଗଦାନ (Student Join)
             </div>
@@ -180,7 +363,7 @@ export const StudentParticipationScreen: React.FC<StudentParticipationScreenProp
               <div className="relative">
                 <input
                   type="text"
-                  placeholder="ରୋଲ୍ ନମ୍ବର ଦେଲେ ସ୍ୱୟଂଚାଳିତ ଭାବେ ଆସିବ..."
+                  placeholder="ରୋଲ୍ ନମ୍ବର ଦେଲେ ଆପେ ଆସିବ କିମ୍ବା ନିଜେ ଲେଖନ୍ତୁ..."
                   value={studentName}
                   onChange={(e) => setStudentName(e.target.value)}
                   className="w-full px-4 py-2.5 rounded-2xl border border-slate-200 text-sm font-semibold text-slate-900 focus:border-emerald-600 focus:outline-none"
@@ -200,14 +383,16 @@ export const StudentParticipationScreen: React.FC<StudentParticipationScreenProp
             </button>
           </form>
 
-          <div className="pt-2 text-center">
-            <button
-              onClick={onExit}
-              className="text-xs text-slate-500 hover:text-slate-800 font-semibold"
-            >
-              ← ମୁଖ୍ୟ ପୃଷ୍ଠାକୁ ଫେରନ୍ତୁ (Back to Home)
-            </button>
-          </div>
+          {!isStandalone && (
+            <div className="pt-2 text-center">
+              <button
+                onClick={onExit}
+                className="text-xs text-slate-500 hover:text-slate-800 font-semibold"
+              >
+                ← ମୁଖ୍ୟ ପୃଷ୍ଠାକୁ ଫେରନ୍ତୁ (Back to Home)
+              </button>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -215,13 +400,19 @@ export const StudentParticipationScreen: React.FC<StudentParticipationScreenProp
 
   // View 2: Active Student Live Participation Arena
   return (
-    <div className="max-w-md mx-auto px-4 py-6 space-y-6">
+    <div className="max-w-md mx-auto px-4 py-5 space-y-4">
       {/* Top Student Header */}
-      <div className="bg-emerald-900 text-white rounded-3xl p-5 shadow-lg border border-emerald-800 flex items-center justify-between">
+      <div className="bg-emerald-900 text-white rounded-3xl p-4 sm:p-5 shadow-lg border border-emerald-800 flex items-center justify-between">
         <div className="space-y-0.5">
           <BrandHeader size="sm" lightText={true} showSubtitle={false} />
           <div className="text-xs text-emerald-200 font-medium">
             {studentName} <span className="font-mono opacity-80">({rollNo})</span>
+          </div>
+          <div className="flex items-center gap-1.5 pt-0.5">
+            <span className={`w-2 h-2 rounded-full ${isServerConnected ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`}></span>
+            <span className="text-[10px] text-emerald-200">
+              {isServerConnected ? 'ଲାଇଭ୍ ସଂଯୁକ୍ତ (Connected to Laptop)' : 'ସର୍ଭର ସଂଯୋଗ ଚାଲିଛି...'}
+            </span>
           </div>
         </div>
 
@@ -234,71 +425,222 @@ export const StudentParticipationScreen: React.FC<StudentParticipationScreenProp
         </div>
       </div>
 
-      {/* Main Participation Card */}
-      <div className="bg-white rounded-3xl p-6 border border-slate-200 shadow-sm text-center space-y-6">
-        <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-100 text-slate-700 text-xs font-bold uppercase">
-          <span>ପ୍ରଶ୍ନ ନଂ {questionIndex + 1}</span>
+      {/* Main Question & Participation Card */}
+      <div className="bg-white rounded-3xl p-5 sm:p-6 border border-slate-200 shadow-sm space-y-4">
+        {/* Question Counter Header */}
+        <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+          <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-100 text-emerald-900 text-xs font-bold uppercase border border-emerald-200">
+            <span>ପ୍ରଶ୍ନ {questionIndex + 1}</span>
+            {allQuestions.length > 0 && <span>/ {allQuestions.length}</span>}
+          </div>
+
+          <div className="text-xs font-bold text-slate-500">
+            {currentQuestion?.pattern ? currentQuestion.pattern.toUpperCase() : 'MCQ'} • {currentQuestion?.marks || 1} Mark
+          </div>
         </div>
 
-        {/* Status Prompt */}
+        {/* Question Display on Mobile Screen */}
         <div className="space-y-2">
-          <h3 className="font-odia font-bold text-xl text-slate-900 leading-snug">
-            {hasRaisedHand 
-              ? 'ଆପଣଙ୍କ ହାତ ଟେକା ଗ୍ରହଣ କରାଯାଇଛି!' 
-              : 'ଉତ୍ତର ଜଣାଥିଲେ ଶୀଘ୍ର ହାତ ଟେକନ୍ତୁ (Raise Hand)'}
-          </h3>
-          <p className="text-xs text-slate-500">
-            {hasRaisedHand 
-              ? 'ଅଧ୍ୟାପକ ଆପଣଙ୍କୁ ଚୟନ କରିବା ପର୍ଯ୍ୟନ୍ତ ଅପେକ୍ଷା କରନ୍ତୁ।' 
-              : 'ପ୍ରଥମେ ହାତ ଟେକିଲେ ଆପଣଙ୍କ ରାଙ୍କ ସର୍ବୋଚ୍ଚ ରହିବ।'}
-          </p>
-        </div>
-
-        {/* BIG RAISE HAND BUTTON (PART 10) */}
-        <div className="py-4">
-          <button
-            onClick={handleRaiseHand}
-            disabled={hasRaisedHand}
-            className={`w-44 h-44 rounded-full mx-auto flex flex-col items-center justify-center transition-all duration-300 select-none ${
-              hasRaisedHand
-                ? 'bg-gradient-to-br from-amber-400 to-amber-500 text-slate-950 shadow-xl ring-8 ring-amber-400/30 scale-105'
-                : 'bg-gradient-to-br from-emerald-600 via-teal-700 to-emerald-800 text-white shadow-2xl hover:scale-105 active:scale-95 ring-8 ring-emerald-500/20'
-            }`}
-          >
-            <Hand className={`w-16 h-16 ${hasRaisedHand ? 'animate-bounce' : 'animate-pulse'}`} />
-            <span className="font-odia font-black text-lg mt-2">
-              {hasRaisedHand ? 'ହାତ ଟେକା ହେଲା' : 'ହାତ ଟେକନ୍ତୁ'}
-            </span>
-            <span className="text-[10px] font-bold uppercase tracking-wider opacity-80">
-              {hasRaisedHand ? 'HAND RAISED' : 'RAISE HAND'}
-            </span>
-          </button>
-        </div>
-
-        {/* Confirmation & Rank Badge */}
-        {hasRaisedHand && (
-          <div className="p-4 rounded-2xl bg-amber-50 border border-amber-300 text-amber-950 animate-in fade-in-50 space-y-1">
-            <div className="flex items-center justify-center gap-2 font-bold text-sm text-amber-900">
-              <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-              <span>ସଫଳତାର ସହ ପଞ୍ଜୀକୃତ ହେଲା!</span>
+          {currentQuestion ? (
+            <h3 className="font-odia font-black text-lg sm:text-xl text-slate-900 leading-snug">
+              {currentQuestion.question}
+            </h3>
+          ) : (
+            <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200 text-center space-y-2">
+              <HelpCircle className="w-8 h-8 text-emerald-600 mx-auto animate-pulse" />
+              <p className="font-odia font-bold text-slate-700 text-sm">
+                ଅଧ୍ୟାପକ ପ୍ରଶ୍ନ ଆରମ୍ଭ କରିବା ପର୍ଯ୍ୟନ୍ତ ଅପେକ୍ଷା କରନ୍ତୁ...
+              </p>
+              <p className="text-xs text-slate-400">
+                (Waiting for teacher to start or change question)
+              </p>
             </div>
-            {assignedRank && (
-              <div className="font-mono text-lg font-black text-amber-800">
-                ଆପଣଙ୍କ ରାଙ୍କ: #{assignedRank}
+          )}
+        </div>
+
+        {/* RAISE HAND BUTTON SECTION (Positioned right below the question) */}
+        <div className="pt-1">
+          {!hasRaisedHand ? (
+            <button
+              onClick={handleRaiseHand}
+              className="w-full py-4 px-5 rounded-2xl bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 hover:from-emerald-700 hover:to-emerald-800 text-white font-bold shadow-lg shadow-emerald-700/25 active:scale-98 transition-all flex items-center justify-between gap-3 ring-4 ring-emerald-500/20"
+            >
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center shrink-0">
+                  <Hand className="w-6 h-6 animate-bounce" />
+                </div>
+                <div className="text-left">
+                  <div className="font-odia font-black text-base tracking-wide">
+                    ହାତ ଟେକନ୍ତୁ (RAISE HAND)
+                  </div>
+                  <div className="text-[11px] text-emerald-100 font-normal">
+                    ଉତ୍ତର ଦେବା ପାଇଁ ଏଠାରେ ଚିପନ୍ତୁ (Tap to unlock options)
+                  </div>
+                </div>
               </div>
+              <div className="px-2.5 py-1 rounded-lg bg-white/20 text-xs font-black uppercase">
+                Tap
+              </div>
+            </button>
+          ) : (
+            <div className="w-full p-3.5 rounded-2xl bg-amber-50 border-2 border-amber-400 text-amber-950 flex items-center justify-between shadow-xs animate-in fade-in-50">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-full bg-amber-500 text-slate-950 flex items-center justify-center font-bold shrink-0">
+                  <CheckCircle2 className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="font-odia font-bold text-sm text-amber-900 leading-tight">
+                    ହାତ ଟେକା ହେଲା (Hand Raised!)
+                  </div>
+                  <div className="text-[11px] text-amber-700">
+                    ଏବେ ତଳ ବିକଳ୍ପରୁ ସଠିକ୍ ଉତ୍ତର ବାଛନ୍ତୁ (Select your option below)
+                  </div>
+                </div>
+              </div>
+              {assignedRank && (
+                <div className="px-2.5 py-1 rounded-xl bg-amber-500 text-slate-950 font-mono text-xs font-black shadow-xs">
+                  Rank #{assignedRank}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Alert prompt if user taps an option before raising hand */}
+        {showRaiseAlert && (
+          <div className="p-3 rounded-2xl bg-rose-50 border-2 border-rose-400 text-rose-900 text-xs font-bold flex items-center gap-2 animate-shake">
+            <AlertCircle className="w-5 h-5 text-rose-600 shrink-0" />
+            <span>
+              ପ୍ରଥମେ ଉପରୋକ୍ତ "Raise Hand" ବଟନ୍ ଦବାନ୍ତୁ, ତା'ପରେ ହିଁ ବିକଳ୍ପ କ୍ଲିକ୍ ହେବ!
+            </span>
+          </div>
+        )}
+
+        {/* Options Section (Locked until Raise Hand is clicked) */}
+        {currentQuestion?.options && currentQuestion.options.length > 0 && (
+          <div className="space-y-2.5 pt-2">
+            <div className="flex items-center justify-between text-xs font-bold text-slate-500 px-1">
+              <span>ବିକଳ୍ପ ଚୟନ (Options):</span>
+              <span className={`flex items-center gap-1 ${hasRaisedHand ? 'text-emerald-700 font-bold' : 'text-slate-400'}`}>
+                {hasRaisedHand ? (
+                  <>
+                    <Unlock className="w-3.5 h-3.5" />
+                    <span>ଅନ୍‌ଲକ୍ ହେଲା (Clickable)</span>
+                  </>
+                ) : (
+                  <>
+                    <Lock className="w-3.5 h-3.5" />
+                    <span>ହାତ ଟେକିଲେ ଖୋଲିବ (Locked)</span>
+                  </>
+                )}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 gap-2.5">
+              {currentQuestion.options.map((opt, optIdx) => {
+                const isSelected = selectedOption === optIdx;
+                const isCorrectFeedback = optionFeedback && isSelected && optionFeedback.isCorrect;
+                const isWrongFeedback = optionFeedback && isSelected && !optionFeedback.isCorrect;
+
+                return (
+                  <button
+                    key={optIdx}
+                    type="button"
+                    onClick={() => handleOptionClick(opt, optIdx)}
+                    className={`p-3.5 rounded-2xl border-2 text-left font-medium transition-all flex items-center justify-between gap-3 select-none ${
+                      !hasRaisedHand
+                        ? 'bg-slate-50 border-slate-200 text-slate-400 cursor-not-allowed opacity-75 border-dashed'
+                        : isCorrectFeedback
+                        ? 'bg-emerald-600 text-white border-emerald-500 shadow-md ring-4 ring-emerald-300/60 scale-[1.01]'
+                        : isWrongFeedback
+                        ? 'bg-rose-50 text-rose-950 border-rose-500 ring-2 ring-rose-300'
+                        : 'bg-slate-50 hover:bg-emerald-50 hover:border-emerald-400 border-slate-200 text-slate-800 active:scale-[0.98]'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3">
+                      <span className={`w-7 h-7 rounded-full flex items-center justify-center font-bold text-xs shrink-0 transition-colors ${
+                        !hasRaisedHand
+                          ? 'bg-slate-200 text-slate-400'
+                          : isCorrectFeedback
+                          ? 'bg-white text-emerald-900 shadow-xs'
+                          : isWrongFeedback
+                          ? 'bg-rose-600 text-white'
+                          : 'bg-slate-200 text-slate-700'
+                      }`}>
+                        {String.fromCharCode(65 + optIdx)}
+                      </span>
+                      <span className={`text-sm font-semibold ${!hasRaisedHand ? 'text-slate-500' : ''}`}>
+                        {opt}
+                      </span>
+                    </div>
+
+                    <div className="shrink-0">
+                      {isCorrectFeedback && (
+                        <span className="px-2 py-0.5 rounded-lg bg-emerald-700 text-white text-[11px] font-black flex items-center gap-1 shadow-xs">
+                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-200" />
+                          <span>ସଠିକ୍</span>
+                        </span>
+                      )}
+                      {isWrongFeedback && (
+                        <span className="px-2 py-0.5 rounded-lg bg-rose-600 text-white text-[11px] font-black flex items-center gap-1 shadow-xs">
+                          <XCircle className="w-3.5 h-3.5 text-rose-200" />
+                          <span>ଭୁଲ୍</span>
+                        </span>
+                      )}
+                      {!hasRaisedHand && (
+                        <Lock className="w-4 h-4 text-slate-400" />
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Live Feedback & Explanation Box */}
+        {optionFeedback && (
+          <div className={`p-4 rounded-2xl border-2 text-left space-y-1.5 animate-in fade-in-50 ${
+            optionFeedback.isCorrect
+              ? 'bg-emerald-50 border-emerald-500 text-emerald-950 ring-2 ring-emerald-200'
+              : 'bg-rose-50 border-rose-400 text-rose-950 ring-2 ring-rose-200'
+          }`}>
+            <div className="flex items-center gap-2 font-bold text-sm">
+              {optionFeedback.isCorrect ? (
+                <>
+                  <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+                  <span>ସଠିକ୍ ଉତ୍ତର! (Correct Answer)</span>
+                </>
+              ) : (
+                <>
+                  <XCircle className="w-5 h-5 text-rose-600 shrink-0" />
+                  <span>ଭୁଲ୍ ଉତ୍ତର (Incorrect Option Selected)</span>
+                </>
+              )}
+            </div>
+            {optionFeedback.explanation && (
+              <p className="text-xs text-slate-700 leading-relaxed font-medium pt-1 border-t border-black/10">
+                {optionFeedback.explanation}
+              </p>
             )}
           </div>
         )}
       </div>
 
       {/* Exit Button */}
-      <div className="text-center pt-2">
+      <div className="text-center pt-1">
         <button
-          onClick={onExit}
+          onClick={() => {
+            if (isStandalone) {
+              setIsJoined(false);
+            } else {
+              onExit();
+            }
+          }}
           className="inline-flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-600 font-bold"
         >
           <LogOut className="w-3.5 h-3.5" />
-          <span>ପ୍ରସ୍ଥାନ କରନ୍ତୁ (Leave Session)</span>
+          <span>ସେସନ୍ ବାହାରକୁ ଯାଆନ୍ତୁ (Leave Session)</span>
         </button>
       </div>
     </div>

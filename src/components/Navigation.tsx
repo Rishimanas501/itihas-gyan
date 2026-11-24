@@ -1,5 +1,5 @@
 import React from 'react';
-import { ArrowLeft, Home, Monitor, Smartphone, Settings as SettingsIcon } from 'lucide-react';
+import { ArrowLeft, Home, Monitor, Smartphone } from 'lucide-react';
 
 interface NavigationProps {
   currentView: string;
