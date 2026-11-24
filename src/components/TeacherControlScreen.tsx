@@ -105,9 +105,11 @@ export const TeacherControlScreen: React.FC<TeacherControlScreenProps> = ({
     ? `${activeHostIp}:${window.location.port || '3000'}`
     : window.location.host;
 
-  const joinUrl = customOnlineUrl.trim()
-    ? `${customOnlineUrl.trim().replace(/\/$/, '')}/?view=student&pin=${session.pin}`
-    : `${window.location.protocol}//${effectiveHost}/?view=student&pin=${session.pin}`;
+  const joinUrl = !isLocalhost
+    ? `${window.location.origin}/?view=student&pin=${session.pin}`
+    : (customOnlineUrl.trim()
+        ? `${customOnlineUrl.trim().replace(/\/$/, '')}/?view=student&pin=${session.pin}`
+        : `${window.location.protocol}//${effectiveHost}/?view=student&pin=${session.pin}`);
 
   const shareOnWhatsApp = () => {
     const text = `🏛️ *ଇତିହାସ ଜ୍ଞାନ (ITIHAS GYAN) - ଲାଇଭ୍ କ୍ଲାସ କୁଇଜ୍*\n\nସମସ୍ତ ଛାତ୍ରଛାତ୍ରୀ ଏହି ଲିଙ୍କ୍ ଉପରେ କ୍ଲିକ୍ କରି କୁଇଜ୍‌ରେ ଯୋଗ ଦିଅନ୍ତୁ (Google Meet ପରି):\n🔗 ${joinUrl}\n\n🔑 *Session PIN:* ${session.pin}`;

@@ -60,9 +60,11 @@ export const PresentationScreen: React.FC<PresentationScreenProps> = ({
   const effectiveHost = (isLocalhost && networkIp)
     ? `${networkIp}:${window.location.port || '3000'}`
     : window.location.host;
-  const joinUrl = onlineUrl
-    ? `${onlineUrl.replace(/\/$/, '')}/?view=student&pin=${initialSession.pin}`
-    : `${window.location.protocol}//${effectiveHost}/?view=student&pin=${initialSession.pin}`;
+  const joinUrl = !isLocalhost
+    ? `${window.location.origin}/?view=student&pin=${initialSession.pin}`
+    : (onlineUrl
+        ? `${onlineUrl.replace(/\/$/, '')}/?view=student&pin=${initialSession.pin}`
+        : `${window.location.protocol}//${effectiveHost}/?view=student&pin=${initialSession.pin}`);
 
   // Interactive option click state: ONLY 1 option is highlighted at a time
   const [clickedOptions, setClickedOptions] = useState<{ [index: number]: 'correct' | 'wrong' }>({});

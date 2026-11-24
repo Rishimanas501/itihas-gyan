@@ -48,8 +48,8 @@ class ClassroomRealtimeService {
         reconnectionAttempts: Infinity,
         reconnectionDelay: 1000,
         reconnectionDelayMax: 4000,
-        timeout: 8000,
-        transports: ['websocket', 'polling']
+        timeout: 10000,
+        transports: ['polling', 'websocket']
       });
 
       this.socket.on('connect', () => {
