@@ -6,6 +6,7 @@ import type {
   HistoryEra, 
   ExamAnswerFormat 
 } from '../types';
+import { apiUrl } from './serverConfig';
 
 export const AI_MODELS: AiModelInfo[] = [
   {
@@ -289,7 +290,7 @@ export async function sendChatMessage(options: ChatRequestOptions): Promise<stri
 
   // 2. Try server proxy if available for Google Gemini & OpenAI (keeps keys and secrets secure)
   try {
-    const proxyRes = await fetch('/api/ai/chat', {
+    const proxyRes = await fetch(apiUrl('/api/ai/chat'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

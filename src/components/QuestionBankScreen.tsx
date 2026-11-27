@@ -63,6 +63,7 @@ import {
   processSelectedFile,
   extractFilesFromClipboard
 } from '../services/chatAiService';
+import { apiUrl } from '../services/serverConfig';
 
 export interface ParsedQuestionItem extends Question {
   isDuplicate?: boolean;
@@ -564,7 +565,7 @@ export const QuestionBankScreen: React.FC<QuestionBankScreenProps> = ({
     setIsConvertingWithAi(true);
     setPasteError(null);
 
-    // 1. First parse the user's input directly
+    // 1. Always parse user's input directly first (supports all 20+ Odia/English numbers, bottom Answer Keys, inline answers)
     const directQuestions = parseAndConvertPastedText(smartPasteRawText, {
       paperId: selectedPaper.id,
       chapterId: selectedChapter.id,
@@ -574,63 +575,101 @@ export const QuestionBankScreen: React.FC<QuestionBankScreenProps> = ({
       language: smartPasteTargetLanguage === 'odia' ? 'odia' : smartPasteTargetLanguage === 'english' ? 'english' : 'bilingual'
     });
 
-    // If teacher pasted specific questions (like 5 blanks or incomplete questions)
-    if (directQuestions.length > 0) {
-      // Auto-solve them using our historical knowledge engine
-      const solved = autoSolveAndCompleteHistoryQuestions(
-        directQuestions,
-        smartPasteTargetPattern,
-        smartPasteTargetLanguage
-      );
-      applyParsedQuestions(solved);
-      setIsConvertingWithAi(false);
-      return;
+    // Check if an online AI provider (user key or server env key) is available
+    let activeProvider = (appSettings?.defaultAiProvider as any) || 'existing';
+    let activeModel = (appSettings?.defaultAiModel as any) || 'existing-history-nlp';
+    const hasGeminiKey = Boolean(appSettings?.geminiApiKey && appSettings.geminiApiKey.trim().length > 8);
+    const hasOpenAiKey = Boolean(appSettings?.openaiApiKey && appSettings.openaiApiKey.trim().length > 8);
+
+    let serverKeys = { hasServerGeminiKey: false, hasServerOpenAiKey: false };
+    try {
+      const mRes = await fetch(apiUrl('/api/ai/models'));
+      if (mRes.ok) {
+        serverKeys = await mRes.json();
+      }
+    } catch {
+      // Offline / no server AI check
     }
 
-    // 2. If no numbered questions were found, generate questions from raw text
+    if (activeProvider === 'existing') {
+      if (hasGeminiKey || serverKeys.hasServerGeminiKey) {
+        activeProvider = 'gemini';
+        activeModel = 'gemini-1.5-flash';
+      } else if (hasOpenAiKey || serverKeys.hasServerOpenAiKey) {
+        activeProvider = 'openai';
+        activeModel = 'gpt-4o-mini';
+      }
+    }
+
+    const canUseCloudAi =
+      (activeProvider === 'gemini' && (hasGeminiKey || serverKeys.hasServerGeminiKey)) ||
+      (activeProvider === 'openai' && (hasOpenAiKey || serverKeys.hasServerOpenAiKey));
+
+    // Check if every parsed question already has a real answer AND doesn't need cloud AI synthesis
+    const allHaveAnswers =
+      directQuestions.length > 0 &&
+      directQuestions.every((q) => Boolean(q.correctAnswer && q.correctAnswer.trim().length > 0)) &&
+      directQuestions.every((q) => q.question.includes('?') || /_{2,}|\.{3,}/.test(q.question) || (q.options && q.options.length >= 2));
+
+    // If cloud AI is NOT configured (offline mode), OR all questions already have full answers & only need local format conversion:
+    if (!canUseCloudAi || (allHaveAnswers && smartPasteTargetPattern === 'auto')) {
+      if (directQuestions.length > 0) {
+        const solved = autoSolveAndCompleteHistoryQuestions(
+          directQuestions,
+          smartPasteTargetPattern,
+          smartPasteTargetLanguage
+        );
+        applyParsedQuestions(solved);
+        setIsConvertingWithAi(false);
+        return;
+      }
+    }
+
+    // 2. Call Online AI (or intelligent fallback) to analyze any format (questions, only answers, blanks, notes) and convert to target format
     const chapName = selectedChapter.nameOdia || selectedChapter.name;
     const paperName = selectedPaper.nameOdia || selectedPaper.name;
 
     let patternInstruction = '';
     if (smartPasteTargetPattern === 'mcq') {
-      patternInstruction = 'Convert the provided content into Multiple Choice Questions (MCQs). Every question MUST have 4 options labelled (A), (B), (C), (D), with correct answer and brief historical explanation.';
+      patternInstruction = 'Convert EVERY item into Multiple Choice Questions (MCQs). Every question MUST have 4 distinct options labelled (A), (B), (C), (D), with Ans: and Exp:. Preserve any answers already provided by the teacher.';
     } else if (smartPasteTargetPattern === 'blanks') {
-      patternInstruction = 'Convert the provided content into Fill-in-the-Blanks questions with ___ blank, followed by Ans: and Exp:.';
+      patternInstruction = 'Convert EVERY item into Fill-in-the-Blanks questions with ________ blank, followed by Ans: (the exact word/phrase that fills the blank) and Exp:.';
     } else if (smartPasteTargetPattern === 'true_false') {
-      patternInstruction = 'Convert the provided content into True or False questions, followed by Ans: True or False and Exp:.';
+      patternInstruction = 'Convert EVERY item into True or False statements, followed by Ans: True or False and Exp:.';
     } else if (smartPasteTargetPattern === 'short') {
-      patternInstruction = 'Convert the provided content into 2-mark short questions with concise accurate answer and explanation.';
+      patternInstruction = 'Convert EVERY item into 2-mark short questions with concise accurate Ans: and Exp:.';
     } else if (smartPasteTargetPattern === 'long') {
-      patternInstruction = 'Convert the provided content into 5-mark comprehensive questions with detailed model answer.';
+      patternInstruction = 'Convert EVERY item into 5-mark comprehensive questions with detailed Ans: and Exp:.';
     } else {
-      patternInstruction = 'Analyze the input text carefully. If only answers or keywords are given, create the corresponding questions. If questions already exist, structure them with full options and answers in standard MCQ or appropriate format.';
+      patternInstruction = 'Analyze the input text carefully. Keep all questions and answers provided by the teacher intact (do NOT drop any numbered question). If answers are missing, solve them accurately. If only answers or keywords are given, generate complete questions for each one.';
     }
 
     const langInstruction = smartPasteTargetLanguage === 'odia'
       ? 'Generate output strictly in Odia language.'
       : smartPasteTargetLanguage === 'english'
       ? 'Generate output in English language.'
-      : 'Generate output in Bilingual format (Odia question followed by English translation).';
+      : 'Generate output in Bilingual format (Odia question followed by English translation, keeping teacher input language clear).';
 
     const aiPrompt = `You are an expert History Professor for College Examination in Odisha.
 Subject/Paper: "${paperName}"
 Chapter: "${chapName}"
 
-TEACHER INPUT (May contain rough questions, only answers, key terms, or study notes):
+TEACHER INPUT (May contain numbered questions 1..N, fill-in-the-blanks with or without answers, bottom answer keys, MCQs, only answers, key terms, or study notes):
 """
 ${smartPasteRawText.trim()}
 """
 
 INSTRUCTIONS:
-1. ${patternInstruction}
-2. ${langInstruction}
-3. Format each question strictly in standard format:
+1. Process ALL items in the teacher input without skipping any question (preserve exact count).
+2. ${patternInstruction}
+3. ${langInstruction}
+4. Format EVERY question strictly using standard numbering (1., 2., 3., ...) like:
 1. [Question Text]
-(A) [Option A]
-(B) [Option B]
-(C) [Option C]
-(D) [Option D]
-Ans: [Correct Option or Answer]
+(A) [Option A] (only if MCQ)
+(B) [Option B] (only if MCQ)
+(C) [Option C] (only if MCQ)
+(D) [Option D] (only if MCQ)
+Ans: [Exact Correct Answer]
 Exp: [Brief historical explanation]
 
 Return only the formatted questions.`;
@@ -640,14 +679,14 @@ Return only the formatted questions.`;
         conversationId: 'smart_ai_paste_' + selectedChapter.id + '_' + Date.now(),
         messages: [],
         currentInput: aiPrompt,
-        provider: (appSettings?.defaultAiProvider as any) || 'existing',
-        model: (appSettings?.defaultAiModel as any) || 'existing-history-nlp',
+        provider: activeProvider,
+        model: activeModel,
         geminiApiKey: appSettings?.geminiApiKey,
         openaiApiKey: appSettings?.openaiApiKey,
         historyEra: 'all',
         examFormat: smartPasteTargetPattern === 'mcq' ? 'mcqs' : smartPasteTargetPattern === 'short' ? '2-mark' : '1-mark',
         targetLanguage: smartPasteTargetLanguage === 'odia' ? 'odia' : smartPasteTargetLanguage === 'english' ? 'english' : 'bilingual',
-        existingQuestionsToAvoid: questions.map(q => q.question).filter(Boolean)
+        existingQuestionsToAvoid: []
       });
 
       const parsed = parseAndConvertPastedText(res, {
@@ -660,34 +699,31 @@ Return only the formatted questions.`;
       });
 
       if (parsed.length > 0) {
-        applyParsedQuestions(parsed);
+        const finalized = autoSolveAndCompleteHistoryQuestions(
+          parsed,
+          smartPasteTargetPattern,
+          smartPasteTargetLanguage
+        );
+        applyParsedQuestions(finalized);
+      } else if (directQuestions.length > 0) {
+        const solved = autoSolveAndCompleteHistoryQuestions(
+          directQuestions,
+          smartPasteTargetPattern,
+          smartPasteTargetLanguage
+        );
+        applyParsedQuestions(solved);
       } else {
-        const directParsed = parseAndConvertPastedText(smartPasteRawText, {
-          paperId: selectedPaper.id,
-          chapterId: selectedChapter.id,
-          subject: selectedPaper.subject || selectedPaper.name,
-          paper: selectedPaper.name,
-          topic: selectedChapter.name,
-          language: 'bilingual'
-        });
-        if (directParsed.length > 0) {
-          applyParsedQuestions(directParsed);
-        } else {
-          setPasteError('AI ପ୍ରଶ୍ନ ଚିହ୍ନଟ କରିପାରିଲା ନାହିଁ। ଦୟାକରି ପାଠ୍ୟ ଯାଞ୍ଚ କରି ପୁନର୍ବାର ଚେଷ୍ଟା କରନ୍ତୁ।');
-        }
+        setPasteError('AI ପ୍ରଶ୍ନ ଚିହ୍ନଟ କରିପାରିଲା ନାହିଁ। ଦୟାକରି ପାଠ୍ୟ ଯାଞ୍ଚ କରି ପୁନର୍ବାର ଚେଷ୍ଟା କରନ୍ତୁ।');
       }
     } catch (e: any) {
       console.error('Error in AI paste conversion:', e);
-      const directParsed = parseAndConvertPastedText(smartPasteRawText, {
-        paperId: selectedPaper.id,
-        chapterId: selectedChapter.id,
-        subject: selectedPaper.subject || selectedPaper.name,
-        paper: selectedPaper.name,
-        topic: selectedChapter.name,
-        language: 'bilingual'
-      });
-      if (directParsed.length > 0) {
-        applyParsedQuestions(directParsed);
+      if (directQuestions.length > 0) {
+        const solved = autoSolveAndCompleteHistoryQuestions(
+          directQuestions,
+          smartPasteTargetPattern,
+          smartPasteTargetLanguage
+        );
+        applyParsedQuestions(solved);
       } else {
         setPasteError('AI ରୂପାନ୍ତରଣରେ ତ୍ରୁଟି: ' + (e.message || 'ଦୟାକରି ଇଣ୍ଟରନେଟ୍ ବା AI ସେଟିଙ୍ଗ୍ ଯାଞ୍ଚ କରନ୍ତୁ।'));
       }

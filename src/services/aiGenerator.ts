@@ -43,12 +43,17 @@ export async function generateQuestionsFromSource(options: GenerateOptions): Pro
  * Automatically analyzes any pasted questions (MCQ, Fill in the Blanks, True/False, One-Word, Short Q&A)
  * whether in Odia, English, or mixed format, extracts options, correct answers, and generates missing explanations.
  */
+export function normalizeOdiaDigits(str: string): string {
+  const odiaDigits = '୦୧୨୩୪୫୬୭୮୯';
+  return str.replace(/[୦-୯]/g, (d) => String(odiaDigits.indexOf(d)));
+}
+
 export function normalizeQuestionForComparison(text: string): string {
   if (!text) return '';
   return text
     .toLowerCase()
-    .replace(/^(?:(?:q(?:uestion|\.|\:)?\s*[\d୧-୯]+[\.\:\-]?)|(?:[\d୧-୯]+[\.\)\-]))\s*/i, '')
-    .replace(/^ପ୍ରଶ୍ନ\s*[\d୧-୯]+[\.\:\-]?\s*/i, '')
+    .replace(/^(?:(?:q(?:uestion|\.|\:)?\s*[\d୦-୯]+[\.\:\-]?)|(?:[\d୦-୯]+[\.\)\-]))\s*/i, '')
+    .replace(/^ପ୍ରଶ୍ନ\s*[\d୦-୯]+[\.\:\-]?\s*/i, '')
     .replace(/[\s\p{P}\p{S}]+/gu, '')
     .trim();
 }
@@ -123,24 +128,88 @@ export function scanDuplicatesInQuestions<T extends { id?: any; question: string
   return duplicates;
 }
 
+function extractTrailingAnswerKey(rawText: string): {
+  questionsPart: string;
+  answerMap: Map<number, string>;
+} {
+  const answerMap = new Map<number, string>();
+  const lines = rawText.split('\n');
+
+  // Dedicated trailing Answer Key header (must NOT be an individual question's "ଉତ୍ତର: <value>" line)
+  const keyHeaderRegex =
+    /^(?:\*{0,2})(?:answers?|answer\s*key|key|ଉତ୍ତରମାଳା|ଉତ୍ତର\s*ତାଲିକା|ସଠିକ୍?\s*ଉତ୍ତର(?:ଗୁଡ଼ିକ)?|ଉତ୍ତର)(?:\*{0,2})\s*[:\-–—.]?\s*$/i;
+  const inlineKeyHeaderRegex =
+    /^(?:\*{0,2})(?:answers?|answer\s*key|ଉତ୍ତରମାଳା|ଉତ୍ତର\s*ତାଲିକା)(?:\*{0,2})\s*[:\-–—.]\s*([\d୦-୯]+[\.\)\:\-–—].+)$/i;
+
+  let splitIdx = -1;
+  for (let i = Math.max(2, Math.floor(lines.length * 0.25)); i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (!keyHeaderRegex.test(trimmed) && !inlineKeyHeaderRegex.test(trimmed)) {
+      continue;
+    }
+
+    const tailLines = lines.slice(i + 1).map((l) => l.trim()).filter(Boolean);
+    const tail = lines.slice(i).join('\n');
+    const hasNumberedItems = /(?:^|\n|\s)[\d୦-୯]+\s*[\.\)\:\-–—]\s*\S/.test(tail);
+    const looksLikeMoreQuestions = tailLines.some(
+      (l) => /_{2,}|\.{3,}|\?|\([A-Da-d]\)/.test(l) || /^(?:Ans(?:wer)?|ଉତ୍ତର|Exp)\s*[:\-]/i.test(l)
+    );
+
+    if (hasNumberedItems && !looksLikeMoreQuestions) {
+      splitIdx = i;
+      break;
+    }
+  }
+
+  if (splitIdx === -1) {
+    return { questionsPart: rawText, answerMap };
+  }
+
+  const questionsPart = lines.slice(0, splitIdx).join('\n').trim();
+  const keyText = lines.slice(splitIdx).join('\n');
+
+  // Parse inline or multi-line numbered key entries: "1. Answer", "୧) Answer", "10 - Answer"
+  const entryRegex = /(?:^|\n|\s)([\d୦-୯]+)\s*[\.\)\:\-–—]\s*([^\n]+?)(?=(?:\s+[\d୦-୯]+\s*[\.\)\:\-–—]\s)|$|\n)/g;
+  for (const match of keyText.matchAll(entryRegex)) {
+    const qNum = Number(normalizeOdiaDigits(match[1]));
+    const ans = match[2].replace(/[,;]\s*$/, '').trim();
+    if (!Number.isNaN(qNum) && qNum > 0 && ans) {
+      answerMap.set(qNum, ans);
+    }
+  }
+
+  return { questionsPart, answerMap };
+}
+
 export function parseAndConvertPastedText(rawText: string, meta: Partial<Question>): Question[] {
   if (!rawText || !rawText.trim()) return [];
 
-  const text = rawText.trim();
+  const { questionsPart, answerMap } = extractTrailingAnswerKey(rawText.trim());
+  const text = questionsPart.trim();
   const now = new Date().toISOString();
   const questions: Question[] = [];
 
   // Split text into question blocks based on standard question delimiters
-  // Patterns: "1.", "1)", "Q1:", "Q.1", "Question 1:", "୧.", "୨.", "ପ୍ରଶ୍ନ ୧:", etc.
-  const blockDelimRegex = /(?:^|\n+)(?=(?:(?:Q(?:uestion|\.|\:)?\s*[\d୧-୯]+)|(?:[\d୧-୯]+[\.\)\-]))|(?:ପ୍ରଶ୍ନ\s*[\d୧-୯]+[\.\:\-]))/i;
+  // Supports English digits 0-9 AND all Odia digits ୦-୯ (e.g. ୧୦., ୨୦.)
+  const blockDelimRegex =
+    /(?:^|\n+)(?=(?:(?:Q(?:uestion|\.|\:)?\s*[\d୦-୯]+)|(?:[\d୦-୯]+[\.\)\-]))|(?:ପ୍ରଶ୍ନ\s*[\d୦-୯]+[\.\:\-]))/i;
   
   let rawBlocks = text.split(blockDelimRegex).map(b => b.trim()).filter(b => b.length > 0);
 
   // If no numbered delimiters found, attempt splitting by double newlines
   if (rawBlocks.length <= 1) {
-    const doubleNewlineBlocks = text.split(/\n\s*\n/).map(b => b.trim()).filter(b => b.length > 15);
+    const doubleNewlineBlocks = text.split(/\n\s*\n/).map(b => b.trim()).filter(b => b.length > 10);
     if (doubleNewlineBlocks.length > 1) {
       rawBlocks = doubleNewlineBlocks;
+    }
+  }
+
+  // If still a single block with multiple lines and no options/Ans markers (e.g., list of blank questions or answers without numbers), split by lines
+  if (rawBlocks.length <= 1 && text.includes('\n')) {
+    const nonEmptyLines = text.split('\n').map(l => l.trim()).filter(l => l.length > 3);
+    const hasExplicitMarkers = nonEmptyLines.some(l => /^(?:\([A-Da-dକ-ଘ1-4]\)|[A-Da-dକ-ଘ][\.\)\-]|Ans|Answer|ଉତ୍ତର|Exp)/i.test(l));
+    if (!hasExplicitMarkers && nonEmptyLines.length > 1) {
+      rawBlocks = nonEmptyLines;
     }
   }
 
@@ -151,7 +220,10 @@ export function parseAndConvertPastedText(rawText: string, meta: Partial<Questio
 
   for (let i = 0; i < rawBlocks.length; i++) {
     const block = rawBlocks[i];
-    const parsedQ = parseSingleQuestionBlock(block, i + 1, meta, now);
+    const numMatch = block.match(/^(?:(?:Q(?:uestion|\.|\:)?\s*)|(?:ପ୍ରଶ୍ନ\s*))?([\d୦-୯]+)/i);
+    const explicitNum = numMatch ? Number(normalizeOdiaDigits(numMatch[1])) : i + 1;
+    const keyAns = answerMap.get(explicitNum) || answerMap.get(i + 1) || '';
+    const parsedQ = parseSingleQuestionBlock(block, i + 1, meta, now, keyAns);
     if (parsedQ) {
       questions.push(parsedQ);
     }
@@ -160,7 +232,13 @@ export function parseAndConvertPastedText(rawText: string, meta: Partial<Questio
   return questions;
 }
 
-function parseSingleQuestionBlock(block: string, index: number, meta: Partial<Question>, now: string): Question | null {
+function parseSingleQuestionBlock(
+  block: string,
+  _index: number,
+  meta: Partial<Question>,
+  now: string,
+  answerFromKey: string = ''
+): Question | null {
   const lines = block.split('\n').map(l => l.trim()).filter(l => l.length > 0);
   if (lines.length === 0) return null;
 
@@ -173,9 +251,10 @@ function parseSingleQuestionBlock(block: string, index: number, meta: Partial<Qu
   let pattern: QuestionPattern = 'mcq';
   let marks = 1;
 
-  // Regex patterns
-  const ansRegex = /^(?:Ans(?:wer)?|ଉତ୍ତର|ସଠିକ୍\s*ଉତ୍ତର|Correct(?:\s*Ans(?:wer)?)?)\s*[\:\-\=]\s*(.+)$/i;
-  const expRegex = /^(?:Exp(?:lanation)?|ବ୍ୟାଖ୍ୟା|Reason|ତଥ୍ୟ)\s*[\:\-\=]\s*(.+)$/i;
+  // Regex patterns (Odia + English variants including shorthand "ଉ:" / "ଉତ୍ତର -" / "ସଠିକ ଉତ୍ତର:")
+  const ansRegex = /^(?:Ans(?:wer)?|ଉତ୍ତର|ଉ|ସଠିକ୍?\s*ଉତ୍ତର|Correct(?:\s*Ans(?:wer)?)?)\s*[\:\.\-\–\—\=]\s*(.+)$/i;
+  const expRegex = /^(?:Exp(?:lanation)?|ବ୍ୟାଖ୍ୟା|Reason|ତଥ୍ୟ)\s*[\:\.\-\–\—\=]\s*(.+)$/i;
+  const inlineAnsRegex = /\s*(?:[\(\[]\s*(?:Ans(?:wer)?|ଉତ୍ତର|ଉ|ସଠିକ୍?\s*ଉତ୍ତର)\s*[\:\.\-\–\—\=]?\s*([^\)\]]+?)\s*[\)\]]|(?:—|–|->|→)\s*(?:(?:Ans(?:wer)?|ଉତ୍ତର|ଉ)\s*[\:\-\=]?\s*)?([^\n]+))$/i;
   
   // Option prefixes: (A), (B), A., A), [A], a., (କ), (ଖ), (1), 1., etc.
   const optLineRegex = /^(?:\(([A-Da-dକ-ଘ1-4])\)|([A-Da-dକ-ଘ1-4])[\.\)\-]|\b([A-Da-d])\s*[\:\-])\s*(.+)$/;
@@ -186,7 +265,7 @@ function parseSingleQuestionBlock(block: string, index: number, meta: Partial<Qu
   let parsingOptions = false;
 
   for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
-    const line = lines[lineIdx];
+    let line = lines[lineIdx];
 
     // Check Answer line
     const ansMatch = line.match(ansRegex);
@@ -202,8 +281,8 @@ function parseSingleQuestionBlock(block: string, index: number, meta: Partial<Qu
       continue;
     }
 
-    // Check Option line
-    const optMatch = line.match(optLineRegex);
+    // Check Option line (only after questionText exists so leading question numbers 1., 2., 3., 4. are never mistaken for options)
+    const optMatch = lineIdx > 0 && questionText.trim().length > 0 ? line.match(optLineRegex) : null;
     if (optMatch) {
       parsingOptions = true;
       const optVal = optMatch[4].trim();
@@ -235,15 +314,31 @@ function parseSingleQuestionBlock(block: string, index: number, meta: Partial<Qu
       continue;
     }
 
+    // Check inline answer at end of question line: e.g. "... ____ ... (Ans: Numismatics)" or "... -> Numismatics"
+    if (!parsingOptions && !answerStr) {
+      const inlineAnsMatch = line.match(inlineAnsRegex);
+      if (inlineAnsMatch) {
+        const extracted = (inlineAnsMatch[1] || inlineAnsMatch[2] || '').trim();
+        if (extracted) {
+          answerStr = extracted;
+          line = line.replace(inlineAnsRegex, '').trim();
+        }
+      }
+    }
+
     // Otherwise, it is question text
-    if (!parsingOptions) {
+    if (!parsingOptions && line) {
       questionText += (questionText ? '\n' : '') + line;
     }
   }
 
-  // Clean Question text: Remove leading question numbering like "1.", "Q1:", "୧."
-  questionText = questionText.replace(/^(?:(?:Q(?:uestion|\.|\:)?\s*[\d୧-୯]+[\.\:\-]?)|(?:[\d୧-୯]+[\.\)\-]))\s*/i, '').trim();
-  questionText = questionText.replace(/^ପ୍ରଶ୍ନ\s*[\d୧-୯]+[\.\:\-]?\s*/i, '').trim();
+  if (!answerStr && answerFromKey) {
+    answerStr = answerFromKey.trim();
+  }
+
+  // Clean Question text: Remove leading question numbering like "1.", "Q1:", "୧୦."
+  questionText = questionText.replace(/^(?:(?:Q(?:uestion|\.|\:)?\s*[\d୦-୯]+[\.\:\-]?)|(?:[\d୦-୯]+[\.\)\-]))\s*/i, '').trim();
+  questionText = questionText.replace(/^ପ୍ରଶ୍ନ\s*[\d୦-୯]+[\.\:\-]?\s*/i, '').trim();
 
   // If question text is empty, fallback to first line
   if (!questionText && lines.length > 0) {
@@ -267,8 +362,7 @@ function parseSingleQuestionBlock(block: string, index: number, meta: Partial<Qu
   );
 
   const isBlankIndic = (
-    questionText.includes('____') || 
-    questionText.includes('.....') ||
+    /_{2,}|\.{3,}|-{3,}|\(\s{2,}\)|\[\s{2,}\]/.test(questionText) ||
     lowerQ.includes('fill in the blank') ||
     questionText.includes('ଶୂନ୍ୟସ୍ଥାନ')
   );
@@ -786,102 +880,294 @@ export const ANCIENT_HISTORY_KNOWLEDGE: HistoryKnowledgeEntry[] = [
     explanationEng: 'The Madala Panji is the historical palm-leaf chronicle of the Jagannath Temple at Puri, detailing Odisha dynasties and religious traditions.',
     distractorsOdia: ['କୈଫିୟତ', 'ତବାକତ୍-ଇ-ନାସିରୀ', 'ରାଜମାଳା'],
     distractorsEng: ['Kaifiyat', 'Tabaqat-i-Nasiri', 'Rajmala']
+  },
+  {
+    keywords: ['ମୁଦ୍ରା', 'coin', 'numismatics', 'ମୁଦ୍ରାତତ୍ତ୍ୱ'],
+    answerOdia: 'ମୁଦ୍ରାତତ୍ତ୍ୱ (Numismatics)',
+    answerEng: 'Numismatics',
+    explanationOdia: 'ପ୍ରାଚୀନ ମୁଦ୍ରାଗୁଡ଼ିକର ବୈଜ୍ଞାନିକ ଅଧ୍ୟୟନକୁ \'ମୁଦ୍ରାତତ୍ତ୍ୱ\' (Numismatics) କୁହାଯାଏ, ଯାହା ରାଜବଂଶ, ଅର୍ଥନୀତି ଓ ତାରିଖ ନିରୂପଣରେ ସହାୟକ ହୁଏ।',
+    explanationEng: 'Numismatics is the scientific study of ancient coins, inscriptions on coinage, metallurgy, and economic history.',
+    distractorsOdia: ['ଅଭିଲେଖ ତତ୍ତ୍ୱ (Epigraphy)', 'ପ୍ରତ୍ନତତ୍ତ୍ୱ (Archaeology)', 'ମାନବତତ୍ତ୍ୱ (Anthropology)'],
+    distractorsEng: ['Epigraphy', 'Archaeology', 'Paleography']
+  },
+  {
+    keywords: ['ଶିଳାଲେଖ', 'ଅଭିଲେଖ', 'inscription', 'epigraphy', 'ଅଭିଲେଖ ତତ୍ତ୍ୱ'],
+    answerOdia: 'ଅଭିଲେଖ ତତ୍ତ୍ୱ / ପ୍ରତ୍ନଲିପି ବିଜ୍ଞାନ (Epigraphy)',
+    answerEng: 'Epigraphy',
+    explanationOdia: 'ଶିଳା, ସ୍ତମ୍ଭ ଓ ତାମ୍ରପତ୍ରରେ ଖୋଦିତ ପ୍ରାଚୀନ ଅଭିଲେଖଗୁଡ଼ିକର ଅଧ୍ୟୟନକୁ \'ଅଭିଲେଖ ତତ୍ତ୍ୱ\' (Epigraphy) କୁହାଯାଏ।',
+    explanationEng: 'Epigraphy is the study of inscriptions carved on stone pillars, rocks, temple walls, and copper plates.',
+    distractorsOdia: ['ମୁଦ୍ରାତତ୍ତ୍ୱ (Numismatics)', 'ପ୍ରତ୍ନତତ୍ତ୍ୱ (Archaeology)', 'ଲିପିତତ୍ତ୍ୱ (Paleography)'],
+    distractorsEng: ['Numismatics', 'Archaeology', 'Numismatology']
+  },
+  {
+    keywords: ['ପ୍ରତ୍ନତତ୍ତ୍ୱ', 'excavation', 'archaeology', 'ଖନନ'],
+    answerOdia: 'ପ୍ରତ୍ନତତ୍ତ୍ୱ (Archaeology)',
+    answerEng: 'Archaeology',
+    explanationOdia: 'ଭୂ-ଖନନ ଦ୍ୱାରା ପ୍ରାପ୍ତ ପ୍ରାଚୀନ ଭୌତିକ ଅବଶେଷ, ଅସ୍ତ୍ରଶସ୍ତ୍ର, ମୃତ୍ତିକା ପାତ୍ର ଓ ସ୍ଥାପତ୍ୟର ଅଧ୍ୟୟନକୁ ପ୍ରତ୍ନତତ୍ତ୍ୱ କୁହାଯାଏ।',
+    explanationEng: 'Archaeology is the study of human history and prehistory through the excavation and analysis of material artifacts.',
+    distractorsOdia: ['ମୁଦ୍ରାତତ୍ତ୍ୱ (Numismatics)', 'ଅଭିଲେଖ ତତ୍ତ୍ୱ (Epigraphy)', 'ଭୂତତ୍ତ୍ୱ (Geology)'],
+    distractorsEng: ['Numismatics', 'Epigraphy', 'Geology']
+  },
+  {
+    keywords: ['ଫାହିୟାନ', 'fa-hien', 'faxian'],
+    answerOdia: 'ଫାହିୟାନ (Fa-Hien)',
+    answerEng: 'Fa-Hien (Faxian)',
+    explanationOdia: 'ଚୀନା ବୌଦ୍ଧ ପରିବ୍ରାଜକ ଫାହିୟାନ ଦ୍ୱିତୀୟ ଚନ୍ଦ୍ରଗୁପ୍ତ (ବିକ୍ରମାଦିତ୍ୟ)ଙ୍କ ରାଜତ୍ୱ କାଳରେ ଭାରତ ଭ୍ରମଣ କରିଥିଲେ।',
+    explanationEng: 'Chinese Buddhist pilgrim Fa-Hien visited India during the Gupta reign of Chandragupta II (Vikramaditya).',
+    distractorsOdia: ['ହ୍ୟୁଏନସାଂ (Hiuen Tsang)', 'ଇତ୍‌ସିଙ୍ଗ (I-Tsing)', 'ମେଗାସ୍ଥିନିସ (Megasthenes)'],
+    distractorsEng: ['Hiuen Tsang', 'I-Tsing', 'Megasthenes']
+  },
+  {
+    keywords: ['ହ୍ୟୁଏନସାଂ', 'hiuen tsang', 'xuanzang', 'ସି-ୟୁ-କି'],
+    answerOdia: 'ହ୍ୟୁଏନସାଂ (Hiuen Tsang)',
+    answerEng: 'Hiuen Tsang (Xuanzang)',
+    explanationOdia: 'ହର୍ଷବର୍ଦ୍ଧନଙ୍କ ସମୟରେ ଭାରତ ଆସିଥିବା ଚୀନା ପରିବ୍ରାଜକ ହ୍ୟୁଏନସାଂ \'ସି-ୟୁ-କି\' ଗ୍ରନ୍ଥ ରଚନା କରିଥିଲେ ଏବଂ ଓଡ଼ିଶାର ପୁଷ୍ପଗିରି ଓ ଚେଳିତାଲୋ ବର୍ଣ୍ଣନା କରିଥିଲେ।',
+    explanationEng: 'Hiuen Tsang visited India during Emperor Harsha\'s reign and authored Si-Yu-Ki, describing Odisha\'s Buddhist centers.',
+    distractorsOdia: ['ଫାହିୟାନ (Fa-Hien)', 'ମେଗାସ୍ଥିନିସ (Megasthenes)', 'ଅଲବେରୁନୀ (Al-Biruni)'],
+    distractorsEng: ['Fa-Hien', 'Megasthenes', 'Al-Biruni']
   }
 ];
+
+function buildSmartMcqOptions(
+  correctAns: string,
+  allQuestions: Question[],
+  matched: HistoryKnowledgeEntry | undefined,
+  isEng: boolean
+): string[] {
+  const pool: string[] = [];
+
+  // 1. Add distractors from matched knowledge entry
+  if (matched) {
+    pool.push(...(isEng ? matched.distractorsEng : matched.distractorsOdia));
+  }
+
+  // 2. Borrow real answers from other questions in the same pasted batch as smart distractors
+  for (const other of allQuestions) {
+    const candidate = (other.correctAnswer || '').trim();
+    if (candidate && candidate.toLowerCase() !== correctAns.toLowerCase()) {
+      pool.push(candidate);
+    }
+  }
+
+  // 3. Fallback curated historical options
+  const fallbackPool = isEng
+    ? [
+        'Epigraphy',
+        'Numismatics',
+        'Archaeology',
+        'Rigveda',
+        'Lothal',
+        'Megasthenes',
+        'Kautilya',
+        'Kalhana'
+      ]
+    : [
+        'ଅଭିଲେଖ ତତ୍ତ୍ୱ (Epigraphy)',
+        'ମୁଦ୍ରାତତ୍ତ୍ୱ (Numismatics)',
+        'ପ୍ରତ୍ନତତ୍ତ୍ୱ (Archaeology)',
+        'ଲୋଥାଲ (Lothal)',
+        'କୌଟିଲ୍ୟ (Kautilya)',
+        'ମେଗାସ୍ଥିନିସ (Megasthenes)',
+        'କଲ୍ହଣ (Kalhana)',
+        'ହରିଷେଣ (Harisena)'
+      ];
+  pool.push(...fallbackPool);
+
+  const uniqueDistractors: string[] = [];
+  const normCorrect = correctAns.trim().toLowerCase();
+  for (const d of pool) {
+    const clean = d.trim();
+    if (
+      clean &&
+      clean.toLowerCase() !== normCorrect &&
+      !uniqueDistractors.some((u) => u.toLowerCase() === clean.toLowerCase())
+    ) {
+      uniqueDistractors.push(clean);
+    }
+    if (uniqueDistractors.length === 3) break;
+  }
+
+  return [correctAns, ...uniqueDistractors].sort(() => Math.random() - 0.5);
+}
 
 export function autoSolveAndCompleteHistoryQuestions(
   questions: Question[],
   targetPattern: 'auto' | 'mcq' | 'blanks' | 'true_false' | 'short' | 'long' = 'auto',
   targetLanguage: 'bilingual' | 'odia' | 'english' = 'bilingual'
 ): Question[] {
+  const isEng = targetLanguage === 'english';
+
   return questions.map((q) => {
-    // Only preserve if question already has a valid, non-placeholder answer
-    const hasValidAnswer = Boolean(
+    const rawQ = (q.question || '').trim();
+    const qTextLower = rawQ.toLowerCase();
+
+    // Determine whether user already provided a real answer (from Ans: / inline / bottom Answer Key)
+    const userHasAnswer = Boolean(
       q.correctAnswer &&
-      q.correctAnswer.trim().length > 0 &&
-      !q.correctAnswer.includes('ଅନୁପଲବ୍ଧ') &&
-      !q.correctAnswer.includes('not specified')
+        q.correctAnswer.trim().length > 0 &&
+        !q.correctAnswer.includes('ଅନୁପଲବ୍ଧ') &&
+        !q.correctAnswer.includes('not specified') &&
+        q.correctAnswer.trim() !== 'ଐତିହାସିକ ଉତ୍ତର' &&
+        q.correctAnswer.trim() !== 'Historical Answer'
     );
 
-    if (hasValidAnswer && (q.pattern !== 'mcq' || (q.options && q.options.length >= 2))) {
-      return q;
-    }
+    // Match knowledge entry if available
+    const matched = ANCIENT_HISTORY_KNOWLEDGE.find((entry) =>
+      entry.keywords.some((kw) => qTextLower.includes(kw.toLowerCase()))
+    );
 
-    const qTextLower = q.question.toLowerCase();
-    
-    // Find matching knowledge entry
-    let matched: HistoryKnowledgeEntry | undefined;
-    for (const entry of ANCIENT_HISTORY_KNOWLEDGE) {
-      if (entry.keywords.some(kw => qTextLower.includes(kw.toLowerCase()))) {
-        matched = entry;
-        break;
+    // Check if the input line is ONLY an answer/keyword (no question mark, no blank, very short, and user gave no separate Ans:)
+    const looksLikeOnlyAnswerTerm =
+      !userHasAnswer &&
+      !rawQ.includes('?') &&
+      !rawQ.includes('？') &&
+      !/_{2,}|\.{3,}/.test(rawQ) &&
+      rawQ.split(/\s+/).length <= 6;
+
+    let workingQuestion = rawQ;
+    let ansText = userHasAnswer
+      ? q.correctAnswer.trim()
+      : matched
+      ? isEng
+        ? matched.answerEng
+        : matched.answerOdia
+      : '';
+
+    let expText =
+      q.explanationCorrect &&
+      !q.explanationCorrect.includes('ପ୍ରାମାଣିକ ଅଟେ।') &&
+      !q.explanationCorrect.includes('Historical Answer')
+        ? q.explanationCorrect
+        : matched
+        ? isEng
+          ? matched.explanationEng
+          : matched.explanationOdia
+        : ansText
+        ? isEng
+          ? `Verified historical answer: "${ansText}".`
+          : `ଐତିହାସିକ ତଥ୍ୟ ଅନୁଯାୟୀ "${ansText}" ସଠିକ୍ ଉତ୍ତର ଅଟେ। (Verified answer: ${ansText})`
+        : '';
+
+    if (looksLikeOnlyAnswerTerm) {
+      ansText = rawQ;
+      workingQuestion = isEng
+        ? `Which historical term, figure, or source is associated with "________" (${ansText})?`
+        : `ଇତିହାସର କେଉଁ ପ୍ରସଙ୍ଗ / ତଥ୍ୟ "${ansText}" ସହିତ ସମ୍ପର୍କିତ? (________)`;
+      if (!expText) {
+        expText = matched
+          ? isEng
+            ? matched.explanationEng
+            : matched.explanationOdia
+          : isEng
+          ? `"${ansText}" is an important historical reference in this chapter.`
+          : `"${ansText}" ଏହି ଅଧ୍ୟାୟର ଏକ ଗୁରୁତ୍ୱପୂର୍ଣ୍ଣ ଐତିହାସିକ ତଥ୍ୟ ଅଟେ।`;
       }
     }
 
-    // Determine final pattern
+    // Decide final pattern (honoring explicit targetPattern conversion!)
     let finalPattern: QuestionPattern = q.pattern || 'blanks';
     if (targetPattern !== 'auto') {
-      finalPattern = targetPattern === 'long' ? 'short' : targetPattern;
-    } else if (q.question.includes('____') || q.question.includes('.....')) {
+      finalPattern = targetPattern;
+    } else if (/_{2,}|\.{3,}/.test(workingQuestion)) {
       finalPattern = 'blanks';
+    } else if (q.options && q.options.length >= 2) {
+      finalPattern = 'mcq';
     }
-
-    if (!matched) {
-      // Fallback if not specifically in dictionary: keep user's question with placeholder
-      return {
-        ...q,
-        pattern: finalPattern,
-        marks: finalPattern === 'short' ? 2 : 1,
-        correctAnswer: q.correctAnswer || (targetLanguage === 'english' ? 'Historical Answer' : 'ଐତିହାସିକ ଉତ୍ତର'),
-        explanationCorrect: q.explanationCorrect || (targetLanguage === 'english' ? 'Authentic historical source reference.' : 'ଐତିହାସିକ ତଥ୍ୟ ଅନୁଯାୟୀ ଏହି ଉତ୍ତର ପ୍ରାମାଣିକ ଅଟେ।')
-      };
-    }
-
-    const isEng = targetLanguage === 'english';
-    const ansText = isEng ? matched.answerEng : matched.answerOdia;
-    const expText = isEng ? matched.explanationEng : matched.explanationOdia;
-    const distractors = isEng ? matched.distractorsEng : matched.distractorsOdia;
 
     if (finalPattern === 'mcq') {
-      const opts = [ansText, ...distractors].sort(() => Math.random() - 0.5);
+      const safeAns = ansText || (isEng ? 'Option A' : 'ସଠିକ୍ ଉତ୍ତର ଦିଅନ୍ତୁ');
+      const existingOpts = q.options && q.options.length >= 2 ? q.options : null;
+      const opts = existingOpts || buildSmartMcqOptions(safeAns, questions, matched, isEng);
+      const mcqQuestion = /_{2,}|\.{3,}/.test(workingQuestion)
+        ? workingQuestion
+        : workingQuestion;
+
       return {
         ...q,
+        question: mcqQuestion,
         pattern: 'mcq',
         marks: 1,
         options: opts,
-        correctAnswer: ansText,
-        explanationCorrect: expText
+        correctAnswer: safeAns,
+        explanationCorrect: expText || q.explanationCorrect
       };
     }
 
     if (finalPattern === 'true_false') {
+      const filledStatement =
+        ansText && /_{2,}|\.{3,}/.test(workingQuestion)
+          ? workingQuestion.replace(/_{2,}|\.{3,}/, ansText)
+          : workingQuestion;
+      const tfQuestion =
+        filledStatement.includes('ସତ୍ୟ') || filledStatement.toLowerCase().includes('true')
+          ? filledStatement
+          : `${filledStatement} (${isEng ? 'True / False' : 'ସତ୍ୟ / ମିଥ୍ୟା'})`;
+
       return {
         ...q,
+        question: tfQuestion,
         pattern: 'true_false',
         marks: 1,
         options: ['ସତ୍ୟ (True)', 'ମିଥ୍ୟା (False)'],
-        correctAnswer: 'ସତ୍ୟ (True)',
-        explanationCorrect: expText
+        correctAnswer:
+          q.correctAnswer && (q.correctAnswer.includes('False') || q.correctAnswer.includes('ମିଥ୍ୟା'))
+            ? 'ମିଥ୍ୟା (False)'
+            : 'ସତ୍ୟ (True)',
+        explanationCorrect: expText || q.explanationCorrect
       };
     }
 
-    if (finalPattern === 'short') {
+    if (finalPattern === 'short' || finalPattern === 'long') {
+      const cleanQuestion = /_{2,}|\.{3,}/.test(workingQuestion)
+        ? workingQuestion.replace(/_{2,}|\.{3,}/, isEng ? 'what' : 'କଣ')
+        : workingQuestion;
+      const marksVal = finalPattern === 'long' ? 5 : 2;
+      const modelAns =
+        ansText
+          ? isEng
+            ? `${ansText}. ${expText}`
+            : `${ansText} — ${expText}`
+          : q.modelAnswer || '';
+
       return {
         ...q,
-        pattern: 'short',
-        marks: 2,
+        question: cleanQuestion,
+        pattern: finalPattern,
+        marks: marksVal,
+        options: undefined,
+        correctAnswer: ansText || q.correctAnswer || '',
+        modelAnswer: modelAns,
+        explanationCorrect: expText || q.explanationCorrect
+      };
+    }
+
+    if (finalPattern === 'one_word') {
+      return {
+        ...q,
+        question: workingQuestion,
+        pattern: 'one_word',
+        marks: 1,
+        options: undefined,
         correctAnswer: ansText,
-        explanationCorrect: expText
+        explanationCorrect: expText || q.explanationCorrect
       };
     }
 
     // Default: blanks
+    const blankQuestion = /_{2,}|\.{3,}/.test(workingQuestion)
+      ? workingQuestion
+      : ansText && workingQuestion.toLowerCase().includes(ansText.toLowerCase())
+      ? workingQuestion.replace(new RegExp(ansText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'), '________')
+      : `${workingQuestion} ________`;
+
     return {
       ...q,
+      question: blankQuestion,
       pattern: 'blanks',
       marks: 1,
+      options: undefined,
       correctAnswer: ansText,
-      explanationCorrect: expText
+      explanationCorrect: expText || q.explanationCorrect
     };
   });
 }
