@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { db, initDatabaseDefaults } from './db';
 import type { Question, QuizSession, AppSettings } from './types';
 import { downloadStudentImportTemplate } from './services/excelService';
+import { apiUrl, setConfiguredServerUrl } from './services/serverConfig';
 
 // Layout & Navigation Components
 import { Sidebar } from './components/Sidebar';
@@ -23,8 +24,16 @@ import { AboutDownloadsScreen } from './components/AboutDownloadsScreen';
 import { HistoricalMapScreen } from './components/HistoricalMapScreen';
 
 export function App() {
+  const initialParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
+  const initialViewParam = initialParams?.get('view');
+  const initialPinParam = initialParams?.get('pin') || '';
+
   // Navigation stack
-  const [navHistory, setNavHistory] = useState<string[]>(['home']);
+  const [navHistory, setNavHistory] = useState<string[]>(() => {
+    if (initialViewParam === 'student') return ['student'];
+    if (initialViewParam === 'presentation') return ['presentation'];
+    return ['home'];
+  });
   const currentView = navHistory[navHistory.length - 1] || 'home';
 
   // Responsive Sidebar State (Closed by default on desktop & mobile)
@@ -47,7 +56,8 @@ export function App() {
   // Active Quiz Session state
   const [activeSession, setActiveSession] = useState<QuizSession | null>(null);
   const [sessionQuestions, setSessionQuestions] = useState<Question[]>([]);
-  const [studentJoinPin, setStudentJoinPin] = useState('');
+  const [studentJoinPin, setStudentJoinPin] = useState(() => (initialViewParam === 'student' ? initialPinParam : ''));
+  const [presentationPin, setPresentationPin] = useState(() => (initialViewParam === 'presentation' ? initialPinParam : ''));
 
   // Active Question Bank Chapter context (for return navigation from AI Chat)
   const [qbChapterContext, setQbChapterContext] = useState<{
@@ -64,15 +74,21 @@ export function App() {
       refreshCounts();
     });
 
-    // Check query params for direct links: ?view=student&pin=1234 or ?view=presentation
+    // Check query params for direct links: ?view=student&pin=1234 or ?view=presentation&pin=1234
     const params = new URLSearchParams(window.location.search);
     const viewParam = params.get('view');
     const pinParam = params.get('pin');
+    const serverParam = params.get('server');
+
+    if (serverParam) {
+      setConfiguredServerUrl(serverParam);
+    }
 
     if (viewParam === 'student') {
       if (pinParam) setStudentJoinPin(pinParam);
       setNavHistory(['student']);
     } else if (viewParam === 'presentation') {
+      if (pinParam) setPresentationPin(pinParam);
       setNavHistory(['presentation']);
     }
 
@@ -83,7 +99,7 @@ export function App() {
     window.addEventListener('offline', handleOffline);
 
     // Fetch local network IP from server if available
-    fetch('/api/info')
+    fetch(apiUrl('/api/info'))
       .then((res) => res.json())
       .then((data) => {
         if (data && data.localIp) setLocalIp(data.localIp);
@@ -114,6 +130,9 @@ export function App() {
       setResultsCount(resCount);
       if (appSettings) {
         setSettings(appSettings);
+        if (appSettings.serverUrl) {
+          setConfiguredServerUrl(appSettings.serverUrl);
+        }
         if (appSettings.defaultLanguage) {
           setCurrentLanguage(appSettings.defaultLanguage);
         }
@@ -230,14 +249,23 @@ export function App() {
     }
   };
 
-  // 1. PRESENTATION SCREEN (Distraction-free full-screen for Digital Flat Panels)
-  // Per requirement 11: "The Live Quiz Presentation Screen must remain distraction-free and should not display the normal dashboard sidebar"
-  if (currentView === 'presentation' && activeSession) {
+  // 1. PRESENTATION SCREEN (Distraction-free full-screen for LG Digital Flat Panels / Projectors)
+  // Supports both local activeSession AND remote Smart Panel linking via ?view=presentation&pin=XXXX
+  if (currentView === 'presentation') {
+    const isDirectPresentationLink = new URLSearchParams(window.location.search).get('view') === 'presentation';
     return (
       <PresentationScreen
-        session={activeSession}
+        session={activeSession || undefined}
         questions={sessionQuestions}
-        onExit={handleBack}
+        initialPin={presentationPin || activeSession?.pin || ''}
+        isStandalone={isDirectPresentationLink}
+        onExit={() => {
+          if (isDirectPresentationLink) {
+            setNavHistory(['home']);
+          } else {
+            handleBack();
+          }
+        }}
       />
     );
   }
@@ -344,6 +372,12 @@ export function App() {
               session={activeSession}
               questions={sessionQuestions}
               onBack={handleBack}
+              onSessionEnded={() => {
+                setActiveSession(null);
+                setSessionQuestions([]);
+                setNavHistory(['home']);
+                refreshCounts();
+              }}
               onOpenPresentation={openPresentation}
               onOpenStudentView={openStudentView}
             />

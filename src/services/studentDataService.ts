@@ -108,16 +108,52 @@ export function normalizeCourseCategory(cat?: string | null): CourseCategory | s
   return c;
 }
 
+export const STUDENTS_REPLACED_FLAG_KEY = 'itihas_students_replaced_by_import';
+
 /**
  * Initializes students and course enrolments safely in Dexie IndexedDB.
- * Preserves authentic student records and links course enrolments.
- * Ensures complete multi-enrolment records (Major, Minor, MDC, AEC, SEC, VAC) are present.
+ * Preserves authentic student records and links course enrolments,
+ * unless the user has explicitly replaced the student list via Excel/CSV import.
  */
 export async function initStudentsAndEnrolments(): Promise<{ studentsCount: number; enrolmentsCount: number }> {
   try {
     const existingStudents = await db.students.toArray();
     const existingEnrolmentsCount = await db.enrolments.count();
     const existingMinorCount = await db.enrolments.filter(e => normalizeCourseCategory(e.courseCategory) === 'Minor').count();
+    const wasReplacedByImport =
+      typeof localStorage !== 'undefined' &&
+      localStorage.getItem(STUDENTS_REPLACED_FLAG_KEY) === 'true';
+
+    // If user explicitly replaced the student list with their own Excel/CSV import,
+    // never overwrite or re-seed the default 401 authentic students.
+    if (wasReplacedByImport && existingStudents.length > 0) {
+      const existingEnrolmentRolls = new Set((await db.enrolments.toArray()).map(e => e.rollNo));
+      const now = new Date().toISOString();
+      for (const st of existingStudents) {
+        if (!existingEnrolmentRolls.has(st.rollNo)) {
+          const batch = st.batch || '2024-27';
+          const sem = st.semester || 'Semester I';
+          const dept = st.department || 'History';
+          await db.enrolments.add({
+            studentId: st.id,
+            rollNo: st.rollNo,
+            courseCategory: 'Major',
+            specificCategory: 'Major (Core-I)',
+            subject: dept,
+            department: dept,
+            semester: sem,
+            batch,
+            academicSession: batch,
+            createdAt: now,
+            updatedAt: now
+          });
+        }
+      }
+      return {
+        studentsCount: existingStudents.length,
+        enrolmentsCount: await db.enrolments.count()
+      };
+    }
 
     const hasDummyStudents = existingStudents.some(s => s.rollNo.startsWith('HIST-2024-00'));
     const needsStudentsSeed = existingStudents.length < AUTHENTIC_STUDENTS_SEED.length || hasDummyStudents;

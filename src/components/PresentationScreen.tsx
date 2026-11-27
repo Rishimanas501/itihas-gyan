@@ -10,27 +10,42 @@ import {
   Flame, 
   CheckCircle2, 
   XCircle,
-  QrCode
+  QrCode,
+  Monitor,
+  ArrowRight,
+  Lock
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { BrandHeader } from './BrandHeader';
 import type { Question, QuizSession, HandRaiseRecord } from '../types';
 import { realtimeService } from '../services/socketService';
+import { apiUrl, getEffectiveServerBaseUrl } from '../services/serverConfig';
 
 interface PresentationScreenProps {
-  session: QuizSession;
-  questions: Question[];
+  session?: QuizSession;
+  questions?: Question[];
+  initialPin?: string;
+  isStandalone?: boolean;
   onExit: () => void;
 }
 
 export const PresentationScreen: React.FC<PresentationScreenProps> = ({
   session: initialSession,
-  questions,
+  questions: initialQuestions = [],
+  initialPin = '',
+  isStandalone: _isStandalone = false,
   onExit
 }) => {
-  const [currentQIndex, setCurrentQIndex] = useState(initialSession.currentQuestionIndex || 0);
-  const [revealAnswer, setRevealAnswer] = useState(initialSession.revealAnswer || false);
-  const [showDescription, setShowDescription] = useState(initialSession.showDescription || false);
+  const [activePin, setActivePin] = useState((initialPin || initialSession?.pin || '').trim());
+  const [pinInput, setPinInput] = useState((initialPin || initialSession?.pin || '').trim());
+  const [isConnectedToSession, setIsConnectedToSession] = useState(Boolean(initialSession));
+  const [panelError, setPanelError] = useState('');
+  const [isSessionEnded, setIsSessionEnded] = useState(false);
+
+  const [questions, setQuestions] = useState<Question[]>(initialQuestions);
+  const [currentQIndex, setCurrentQIndex] = useState(initialSession?.currentQuestionIndex || 0);
+  const [revealAnswer, setRevealAnswer] = useState(initialSession?.revealAnswer || false);
+  const [showDescription, setShowDescription] = useState(initialSession?.showDescription || false);
   const [handRaises, setHandRaises] = useState<HandRaiseRecord[]>([]);
   const [studentCount, setStudentCount] = useState(0);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -41,30 +56,44 @@ export const PresentationScreen: React.FC<PresentationScreenProps> = ({
   const [onlineUrl, setOnlineUrl] = useState<string>('');
 
   useEffect(() => {
-    fetch('/api/info')
-      .then((res) => res.json())
-      .then((data) => {
-        if (data) {
-          if (data.cloudflareUrl) {
-            setOnlineUrl(data.cloudflareUrl);
+    const syncNetworkInfo = () => {
+      fetch(apiUrl('/api/info'))
+        .then((res) => res.json())
+        .then((data) => {
+          if (data) {
+            setOnlineUrl(data.cloudflareUrl || '');
+            if (data.localIp && data.localIp !== 'localhost' && data.localIp !== '127.0.0.1') {
+              setNetworkIp(data.localIp);
+            }
           }
-          if (data.localIp && data.localIp !== 'localhost' && data.localIp !== '127.0.0.1') {
-            setNetworkIp(data.localIp);
-          }
-        }
-      })
-      .catch(() => {});
+        })
+        .catch(() => {});
+    };
+
+    syncNetworkInfo();
+    const unsubTunnel = realtimeService.on('tunnel_url_updated', (data: any) => {
+      if (data?.cloudflareUrl) {
+        setOnlineUrl(data.cloudflareUrl);
+      }
+    });
+
+    return () => {
+      unsubTunnel();
+    };
   }, []);
 
-  const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+  const configuredBase = getEffectiveServerBaseUrl();
+  const isLocalhost = !configuredBase && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
   const effectiveHost = (isLocalhost && networkIp)
     ? `${networkIp}:${window.location.port || '3000'}`
     : window.location.host;
-  const joinUrl = !isLocalhost
-    ? `${window.location.origin}/?view=student&pin=${initialSession.pin}`
-    : (onlineUrl
-        ? `${onlineUrl.replace(/\/$/, '')}/?view=student&pin=${initialSession.pin}`
-        : `${window.location.protocol}//${effectiveHost}/?view=student&pin=${initialSession.pin}`);
+  const joinUrl = configuredBase
+    ? `${configuredBase}/?view=student&pin=${activePin}`
+    : (!isLocalhost
+        ? `${window.location.origin}/?view=student&pin=${activePin}`
+        : (onlineUrl
+            ? `${onlineUrl.replace(/\/$/, '')}/?view=student&pin=${activePin}`
+            : `${window.location.protocol}//${effectiveHost}/?view=student&pin=${activePin}`));
 
   // Interactive option click state: ONLY 1 option is highlighted at a time
   const [clickedOptions, setClickedOptions] = useState<{ [index: number]: 'correct' | 'wrong' }>({});
@@ -87,10 +116,63 @@ export const PresentationScreen: React.FC<PresentationScreenProps> = ({
     }
   }, [lastFeedback, showDescription]);
 
+  // Connect & sync with live session on server when activePin is set (LG Smart Panel link)
+  useEffect(() => {
+    if (!activePin) return;
+    setIsSessionEnded(false);
+    setPanelError('');
+    realtimeService.joinAsPresentation(activePin);
+
+    const pollSession = () => {
+      fetch(apiUrl(`/api/session/${activePin}`))
+        .then((res) => res.json())
+        .then((data) => {
+          if (data && data.ended) {
+            setIsSessionEnded(true);
+            setIsQrModalOpen(false);
+            return;
+          }
+          if (data && data.found) {
+            setIsConnectedToSession(true);
+            setPanelError('');
+            if (Array.isArray(data.questions) && data.questions.length > 0) {
+              setQuestions(data.questions);
+            }
+            if (data.currentQuestionIndex !== undefined) setCurrentQIndex(data.currentQuestionIndex);
+            if (data.revealAnswer !== undefined) setRevealAnswer(data.revealAnswer);
+            if (data.showDescription !== undefined) setShowDescription(data.showDescription);
+            if (Array.isArray(data.handRaises)) setHandRaises(data.handRaises);
+            if (data.studentCount !== undefined) setStudentCount(data.studentCount);
+            if (Array.isArray(data.leaderboard)) setLeaderboard(data.leaderboard);
+          }
+        })
+        .catch(() => {});
+    };
+
+    pollSession();
+    const interval = setInterval(pollSession, 2500);
+    return () => clearInterval(interval);
+  }, [activePin]);
+
   // Listen to realtime updates from teacher controls
   useEffect(() => {
+    const unsubState = realtimeService.on('session_state_updated', (data: any) => {
+      if (!data) return;
+      setIsConnectedToSession(true);
+      setIsSessionEnded(false);
+      setPanelError('');
+      if (Array.isArray(data.questions) && data.questions.length > 0) setQuestions(data.questions);
+      if (data.currentQuestionIndex !== undefined) setCurrentQIndex(data.currentQuestionIndex);
+      if (data.revealAnswer !== undefined) setRevealAnswer(data.revealAnswer);
+      if (data.showDescription !== undefined) setShowDescription(data.showDescription);
+      if (Array.isArray(data.handRaises)) setHandRaises(data.handRaises);
+      if (data.studentCount !== undefined) setStudentCount(data.studentCount);
+      if (Array.isArray(data.leaderboard)) setLeaderboard(data.leaderboard);
+    });
+
     const unsubQ = realtimeService.on('question_changed', (data: any) => {
       if (data) {
+        if (Array.isArray(data.questions) && data.questions.length > 0) setQuestions(data.questions);
         if (data.currentQuestionIndex !== undefined) setCurrentQIndex(data.currentQuestionIndex);
         if (data.revealAnswer !== undefined) setRevealAnswer(data.revealAnswer);
         if (data.showDescription !== undefined) setShowDescription(data.showDescription);
@@ -148,7 +230,19 @@ export const PresentationScreen: React.FC<PresentationScreenProps> = ({
       }
     });
 
+    const unsubEnded = realtimeService.on('session_ended', () => {
+      setIsSessionEnded(true);
+      setIsQrModalOpen(false);
+    });
+
+    const unsubJoinErr = realtimeService.on('join_error', (data: any) => {
+      if (data?.message) {
+        setPanelError(data.message);
+      }
+    });
+
     return () => {
+      unsubState();
       unsubQ();
       unsubReveal();
       unsubOption();
@@ -156,6 +250,8 @@ export const PresentationScreen: React.FC<PresentationScreenProps> = ({
       unsubHands();
       unsubStudents();
       unsubLeaderboard();
+      unsubEnded();
+      unsubJoinErr();
     };
   }, []);
 
@@ -204,7 +300,7 @@ export const PresentationScreen: React.FC<PresentationScreenProps> = ({
       setRevealAnswer(true);
     }
 
-    realtimeService.clickOption(initialSession.pin, optIdx, opt, isCorrect, explanation);
+    realtimeService.clickOption(activePin, optIdx, opt, isCorrect, explanation);
   };
 
   const toggleFullscreen = () => {
@@ -216,6 +312,101 @@ export const PresentationScreen: React.FC<PresentationScreenProps> = ({
       setIsFullscreen(false);
     }
   };
+
+  if (isSessionEnded) {
+    return (
+      <div className="fixed inset-0 z-50 bg-slate-950 text-white flex items-center justify-center p-6">
+        <div className="max-w-lg w-full bg-slate-900 border border-slate-800 rounded-3xl p-8 text-center space-y-5 shadow-2xl">
+          <div className="w-16 h-16 rounded-2xl bg-rose-500/20 text-rose-400 flex items-center justify-center mx-auto border border-rose-500/30">
+            <Lock className="w-8 h-8" />
+          </div>
+          <h2 className="font-odia font-black text-2xl sm:text-3xl text-amber-300">
+            କ୍ଲାସ୍ ଏବଂ QR କୋଡ୍ ବନ୍ଦ ହୋଇଯାଇଛି
+          </h2>
+          <p className="text-sm text-slate-300 leading-relaxed">
+            ଶିକ୍ଷକ ଏହି କୁଇଜ୍ ସେସନ୍ (PIN: <span className="font-mono font-bold text-white">{activePin}</span>) କୁ ସମାପ୍ତ କରିଛନ୍ତି। ଏହି କ୍ଲାସ୍‌ର QR କୋଡ୍ ବର୍ତ୍ତମାନ ନିଷ୍କ୍ରିୟ ହୋଇଯାଇଛି।
+          </p>
+          <div className="flex flex-col sm:flex-row gap-3 pt-2">
+            <button
+              onClick={() => {
+                setActivePin('');
+                setPinInput('');
+                setIsSessionEnded(false);
+                setIsConnectedToSession(false);
+                setQuestions([]);
+              }}
+              className="flex-1 py-3 px-4 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-bold transition-colors"
+            >
+              ନୂଆ କ୍ଲାସ୍ PIN ସଂଯୋଗ କରନ୍ତୁ (Link Next Class)
+            </button>
+            <button
+              onClick={onExit}
+              className="py-3 px-5 rounded-2xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-bold transition-colors"
+            >
+              ପ୍ରସ୍ଥାନ (Exit)
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!activePin || (!isConnectedToSession && questions.length === 0)) {
+    return (
+      <div className="fixed inset-0 z-50 bg-slate-950 text-white flex items-center justify-center p-6">
+        <div className="max-w-md w-full bg-slate-900 border border-slate-800 rounded-3xl p-7 space-y-5 shadow-2xl">
+          <div className="text-center space-y-2">
+            <div className="w-14 h-14 rounded-2xl bg-blue-500/20 text-blue-400 flex items-center justify-center mx-auto border border-blue-500/30">
+              <Monitor className="w-7 h-7" />
+            </div>
+            <h2 className="font-odia font-black text-2xl text-amber-300">
+              LG Digital Smart Panel ସଂଯୋଗ
+            </h2>
+            <p className="text-xs text-slate-400 leading-relaxed">
+              ଆପଣଙ୍କ ମୋବାଇଲ୍‌ରେ Live Quiz ଆରମ୍ଭ କରି ସେଠାରେ ଦେଖାଯାଉଥିବା ୪-ଅଙ୍କ ବିଶିଷ୍ଟ Session PIN ଏଠାରେ ଦିଅନ୍ତୁ:
+            </p>
+          </div>
+
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (pinInput.trim()) {
+                setActivePin(pinInput.trim());
+              }
+            }}
+            className="space-y-4"
+          >
+            <input
+              type="text"
+              placeholder="Session PIN (e.g. 4829)"
+              value={pinInput}
+              onChange={(e) => setPinInput(e.target.value)}
+              className="w-full px-4 py-3.5 rounded-2xl bg-slate-950 border-2 border-slate-700 text-center font-mono text-2xl font-black tracking-[0.25em] text-amber-300 focus:border-blue-500 focus:outline-none"
+            />
+            {panelError && (
+              <p className="text-xs text-amber-300 bg-amber-950/60 border border-amber-800 rounded-xl p-2.5 text-center">
+                {panelError}
+              </p>
+            )}
+            <button
+              type="submit"
+              className="w-full py-3.5 rounded-2xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-sm flex items-center justify-center gap-2 transition-colors"
+            >
+              <span>Smart Panel ସଂଯୋଗ କରନ୍ତୁ (Link Panel)</span>
+              <ArrowRight className="w-4 h-4" />
+            </button>
+          </form>
+
+          <button
+            onClick={onExit}
+            className="w-full py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold transition-colors"
+          >
+            ← ମୁଖ୍ୟ ପୃଷ୍ଠାକୁ ଫେରନ୍ତୁ (Back)
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-950 text-white flex flex-col overflow-y-auto select-none">
@@ -243,7 +434,7 @@ export const PresentationScreen: React.FC<PresentationScreenProps> = ({
           {/* Session PIN & QR */}
           <div className="hidden sm:flex items-center gap-2 bg-slate-800/80 px-3.5 py-1.5 rounded-2xl border border-slate-700 font-mono">
             <span className="text-xs text-slate-400 font-bold">PIN:</span>
-            <span className="text-base sm:text-lg font-black text-amber-400 tracking-widest">{initialSession.pin}</span>
+            <span className="text-base sm:text-lg font-black text-amber-400 tracking-widest">{activePin}</span>
             <button
               onClick={() => setIsQrModalOpen(true)}
               className="ml-1 p-1 rounded-lg bg-slate-700 hover:bg-slate-600 text-amber-300 transition-colors"
@@ -356,7 +547,7 @@ export const PresentationScreen: React.FC<PresentationScreenProps> = ({
                 QUESTION {currentQIndex + 1} OF {questions.length} • {currentQuestion?.marks} MARK{currentQuestion && currentQuestion.marks > 1 ? 'S' : ''}
               </span>
               <span className="text-xs sm:text-sm font-semibold text-slate-400">
-                {initialSession.subject}
+                {initialSession?.subject || currentQuestion?.subject || 'ଇତିହାସ (History)'}
               </span>
             </div>
 
@@ -554,7 +745,7 @@ export const PresentationScreen: React.FC<PresentationScreenProps> = ({
             <div className="space-y-1">
               <div className="text-xs text-slate-400 font-bold uppercase">SESSION PIN</div>
               <div className="font-mono text-3xl font-black text-emerald-800 tracking-widest">
-                {initialSession.pin}
+                {activePin}
               </div>
             </div>
 

@@ -414,7 +414,7 @@ async function executeGeminiChat(options: ChatRequestOptions): Promise<string> {
 
   // Deduplication & Count Instructions
   if (options.existingQuestionsToAvoid && options.existingQuestionsToAvoid.length > 0) {
-    const avoidSnippet = options.existingQuestionsToAvoid.slice(0, 25).map((q, i) => `${i + 1}. ${q}`).join('\n');
+    const avoidSnippet = options.existingQuestionsToAvoid.slice(0, 150).map((q, i) => `${i + 1}. ${q}`).join('\n');
     currentParts.push({
       text: `\n[STRICT DEDUPLICATION RULE: The following questions ALREADY exist in this chapter's Question Bank. DO NOT repeat, rephrase, or duplicate ANY of them. Generate completely fresh, unique questions covering other historical events, sources, or inscriptions:]\n${avoidSnippet}\n`
     });
@@ -523,6 +523,21 @@ async function executeOpenAIChat(options: ChatRequestOptions): Promise<string> {
         text: `\n[Attached Document: ${att.name}]\n${att.extractedText}\n`
       });
     }
+  }
+
+  // Deduplication & Count Instructions
+  if (options.existingQuestionsToAvoid && options.existingQuestionsToAvoid.length > 0) {
+    const avoidSnippet = options.existingQuestionsToAvoid.slice(0, 150).map((q, i) => `${i + 1}. ${q}`).join('\n');
+    currentContent.push({
+      type: 'text',
+      text: `\n[STRICT DEDUPLICATION RULE: The following questions ALREADY exist in this chapter's Question Bank. DO NOT repeat, rephrase, or duplicate ANY of them. Generate completely fresh, unique questions covering other historical events, sources, or inscriptions:]\n${avoidSnippet}\n`
+    });
+  }
+  if (options.questionCount) {
+    currentContent.push({
+      type: 'text',
+      text: `\n[MANDATORY COUNT: Generate exactly ${options.questionCount} questions.]\n`
+    });
   }
 
   formattedMessages.push({

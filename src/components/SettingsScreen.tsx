@@ -15,6 +15,8 @@ import {
 } from 'lucide-react';
 import { db, DEFAULT_SETTINGS } from '../db';
 import type { AppSettings } from '../types';
+import { setConfiguredServerUrl } from '../services/serverConfig';
+import { realtimeService } from '../services/socketService';
 
 interface SettingsScreenProps {
   onBack: () => void;
@@ -41,6 +43,8 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     await db.settings.put(settings);
+    setConfiguredServerUrl(settings.serverUrl);
+    realtimeService.reconnect(settings.serverUrl || undefined);
     onSettingsUpdated(settings);
     setIsSaved(true);
     setTimeout(() => setIsSaved(false), 2500);
@@ -95,6 +99,22 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                 onChange={(e) => setSettings({ ...settings, collegeName: e.target.value })}
                 className="w-full px-3.5 py-2 rounded-xl border border-slate-200 text-sm font-semibold"
               />
+            </div>
+
+            <div className="sm:col-span-2">
+              <label className="block text-xs font-bold text-slate-700 uppercase mb-1">
+                Live Classroom / Cloud Server URL (ମୋବାଇଲ୍ APK ଓ LG Smart Panel ସଂଯୋଗ ପାଇଁ)
+              </label>
+              <input
+                type="text"
+                placeholder="ଯଥା: https://itihas-gyan.onrender.com କିମ୍ବା https://xxxx.trycloudflare.com କିମ୍ବା http://192.168.1.5:3000"
+                value={settings.serverUrl || ''}
+                onChange={(e) => setSettings({ ...settings, serverUrl: e.target.value })}
+                className="w-full px-3.5 py-2 rounded-xl border border-slate-200 text-xs font-mono"
+              />
+              <p className="text-[10px] text-slate-500 mt-1">
+                ମୋବାଇଲ୍ APK ରୁ Live Quiz ଚଳାଇବା ଏବଂ LG Digital Smart Panel ଓ Online ଛାତ୍ରଙ୍କୁ ଯୋଡ଼ିବା ପାଇଁ ଏଠାରେ Render କିମ୍ବା PC Server URL ଦିଅନ୍ତୁ। (ୱେବ୍ ବ୍ରାଉଜର୍‌ରେ ଖାଲି ରଖିପାରିବେ।)
+              </p>
             </div>
           </div>
         </div>

@@ -21,7 +21,8 @@ import {
   Info,
   Compass,
   Map as MapIcon,
-  GraduationCap
+  GraduationCap,
+  Monitor
 } from 'lucide-react';
 import { AppLogo } from './AppLogo';
 import { db } from '../db';
@@ -428,21 +429,29 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
               </div>
             )}
 
-            <div className="flex flex-col sm:flex-row gap-2 mt-1">
+            <div className="flex flex-col sm:flex-row flex-wrap gap-2 mt-1">
               <button
                 onClick={() => onNavigate('student')}
-                className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all shadow-md active:scale-95 flex items-center justify-center gap-1.5 cursor-pointer"
+                className="px-3.5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all shadow-md active:scale-95 flex items-center justify-center gap-1.5 cursor-pointer"
                 title="ଛାତ୍ର ଯୋଗଦାନ (Join Quiz)"
               >
                 <GraduationCap className="w-4 h-4" />
-                <span>ଛାତ୍ର ଯୋଗଦାନ (Join Quiz)</span>
+                <span>ଛାତ୍ର ଯୋଗଦାନ</span>
+              </button>
+              <button
+                onClick={() => onNavigate('presentation')}
+                className="px-3.5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold transition-all shadow-md active:scale-95 flex items-center justify-center gap-1.5 cursor-pointer"
+                title="LG Smart Panel / Projector Display Mode"
+              >
+                <Monitor className="w-4 h-4" />
+                <span>Smart Panel</span>
               </button>
               <button
                 onClick={() => onNavigate('live_quiz')}
-                className="px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-all shadow-md active:scale-95 flex items-center justify-center gap-1.5 cursor-pointer"
+                className="px-3.5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-all shadow-md active:scale-95 flex items-center justify-center gap-1.5 cursor-pointer"
               >
                 <Play className="w-3.5 h-3.5 fill-current" />
-                <span>କୁଇଜ୍ ଆରମ୍ଭ କରନ୍ତୁ</span>
+                <span>କୁଇଜ୍ ଆରମ୍ଭ</span>
               </button>
             </div>
           </div>

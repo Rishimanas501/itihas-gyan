@@ -149,14 +149,14 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
             </button>
           )}
 
-          {/* Quick Refresh Button */}
+          {/* Quick Refresh Button (Visible on both Mobile & Desktop) */}
           <button
             onClick={() => window.location.reload()}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-900 text-xs font-bold border border-amber-300 transition-all cursor-pointer active:scale-95 shadow-2xs"
+            className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl bg-amber-100 hover:bg-amber-200 text-amber-950 text-xs font-bold border border-amber-300 transition-all cursor-pointer active:scale-95 shadow-2xs shrink-0"
             title="ଆପ୍ ରିଫ୍ରେଶ୍ କରନ୍ତୁ (Refresh App)"
           >
-            <RotateCcw className="w-3.5 h-3.5 text-amber-600" />
-            <span className="font-odia font-bold hidden sm:inline">ରିଫ୍ରେଶ୍</span>
+            <RotateCcw className="w-3.5 h-3.5 text-amber-700" />
+            <span className="font-odia font-bold">ରିଫ୍ରେଶ୍</span>
           </button>
 
           {/* Language Selector Dropdown */}

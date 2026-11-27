@@ -24,17 +24,29 @@ import {
   ExternalLink,
   Info,
   Share2,
-  Globe
+  Globe,
+  Link2,
+  Wifi,
+  Loader2,
+  Monitor
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import type { Question, QuizSession, HandRaiseRecord, QuestionScoreRecord } from '../types';
 import { realtimeService } from '../services/socketService';
+import {
+  apiUrl,
+  getConfiguredServerUrl,
+  getEffectiveServerBaseUrl,
+  isNativeMobileApp,
+  setConfiguredServerUrl
+} from '../services/serverConfig';
 import { db } from '../db';
 
 interface TeacherControlScreenProps {
   session: QuizSession;
   questions: Question[];
   onBack: () => void;
+  onSessionEnded?: () => void;
   onOpenPresentation: () => void;
   onOpenStudentView: () => void;
 }
@@ -43,6 +55,7 @@ export const TeacherControlScreen: React.FC<TeacherControlScreenProps> = ({
   session: initialSession,
   questions,
   onBack,
+  onSessionEnded,
   onOpenPresentation,
   onOpenStudentView
 }) => {
@@ -77,20 +90,33 @@ export const TeacherControlScreen: React.FC<TeacherControlScreenProps> = ({
   // Question currently displayed
   const currentQuestion: Question | undefined = questions[currentQIndex];
 
-  // Join link for students (auto-detect LAN IP from server so phone QR scan doesn't open 'localhost')
+  // Join link for students (auto-detect LAN IP & live Cloudflare/Online URL)
   const [networkIp, setNetworkIp] = useState<string>('');
   const [manualIp, setManualIp] = useState<string>('');
+  const [serverTunnelUrl, setServerTunnelUrl] = useState<string>('');
   const [customOnlineUrl, setCustomOnlineUrl] = useState<string>(() => {
-    return localStorage.getItem('itihas_custom_online_url') || '';
+    const saved = localStorage.getItem('itihas_custom_online_url') || '';
+    // Ignore expired temporary trycloudflare URLs from previous runs
+    if (saved.includes('trycloudflare.com')) {
+      localStorage.removeItem('itihas_custom_online_url');
+      return '';
+    }
+    return saved;
   });
+  const [isGeneratingOnlineLink, setIsGeneratingOnlineLink] = useState(false);
+  const [onlineLinkError, setOnlineLinkError] = useState<string | null>(null);
+  const [qrMode, setQrMode] = useState<'auto' | 'wifi'>('auto');
+  const [apkServerUrlInput, setApkServerUrlInput] = useState<string>(() => getConfiguredServerUrl());
+  const [copiedPanelLink, setCopiedPanelLink] = useState(false);
 
-  useEffect(() => {
-    fetch('/api/info')
+  const syncServerInfo = () => {
+    fetch(apiUrl('/api/info'))
       .then((res) => res.json())
       .then((data) => {
         if (data) {
+          setServerTunnelUrl(data.cloudflareUrl || '');
           if (data.cloudflareUrl) {
-            setCustomOnlineUrl(data.cloudflareUrl);
+            setOnlineLinkError(null);
           }
           if (data.localIp && data.localIp !== 'localhost' && data.localIp !== '127.0.0.1') {
             setNetworkIp(data.localIp);
@@ -99,23 +125,92 @@ export const TeacherControlScreen: React.FC<TeacherControlScreenProps> = ({
         }
       })
       .catch(() => {});
+  };
+
+  useEffect(() => {
+    syncServerInfo();
+    const unsubTunnel = realtimeService.on('tunnel_url_updated', (data: any) => {
+      setServerTunnelUrl(data?.cloudflareUrl || '');
+      if (data?.cloudflareUrl) {
+        setOnlineLinkError(null);
+      }
+    });
+    const infoPoll = setInterval(() => {
+      syncServerInfo();
+    }, 5000);
+
+    return () => {
+      unsubTunnel();
+      clearInterval(infoPoll);
+    };
   }, []);
 
+  const configuredBase = getEffectiveServerBaseUrl();
   const activeHostIp = manualIp || networkIp;
-  const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+  const isLocalhost = !configuredBase && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
   const effectiveHost = (isLocalhost && activeHostIp)
     ? `${activeHostIp}:${window.location.port || '3000'}`
     : window.location.host;
 
-  const joinUrl = !isLocalhost
-    ? `${window.location.origin}/?view=student&pin=${session.pin}`
-    : (customOnlineUrl.trim()
-        ? `${customOnlineUrl.trim().replace(/\/$/, '')}/?view=student&pin=${session.pin}`
-        : `${window.location.protocol}//${effectiveHost}/?view=student&pin=${session.pin}`);
+  const wifiBaseUrl = configuredBase || `${window.location.protocol}//${effectiveHost}`;
+  const wifiJoinUrl = `${wifiBaseUrl}/?view=student&pin=${session.pin}`;
+  const activeOnlineBase = configuredBase
+    ? configuredBase
+    : (!isLocalhost ? window.location.origin : (customOnlineUrl.trim() || serverTunnelUrl.trim()));
+  const onlineJoinUrl = activeOnlineBase
+    ? `${activeOnlineBase.replace(/\/$/, '')}/?view=student&pin=${session.pin}`
+    : '';
+  const joinUrl = onlineJoinUrl || wifiJoinUrl;
+  const activeQrUrl = (qrMode === 'wifi' || !onlineJoinUrl) ? wifiJoinUrl : onlineJoinUrl;
+  const smartPanelUrl = `${(activeOnlineBase || wifiBaseUrl).replace(/\/$/, '')}/?view=presentation&pin=${session.pin}`;
+
+  const handleSaveApkServerUrl = async () => {
+    setConfiguredServerUrl(apkServerUrlInput);
+    const existing = await db.settings.get('app_settings');
+    if (existing) {
+      await db.settings.put({ ...existing, serverUrl: apkServerUrlInput.trim() });
+    }
+    realtimeService.reconnect(apkServerUrlInput.trim() || undefined);
+    realtimeService.initTeacherSession(session, questions);
+    syncServerInfo();
+  };
+
+  const handleGenerateOnlineLink = async () => {
+    if (onlineJoinUrl) {
+      navigator.clipboard.writeText(onlineJoinUrl);
+      setCopiedLink(true);
+      setTimeout(() => setCopiedLink(false), 2000);
+      return;
+    }
+    setIsGeneratingOnlineLink(true);
+    setOnlineLinkError(null);
+    try {
+      const res = await fetch(apiUrl('/api/tunnel/start'), { method: 'POST' });
+      const data = await res.json();
+      if (data && data.cloudflareUrl) {
+        setServerTunnelUrl(data.cloudflareUrl);
+        setQrMode('auto');
+        const fullLink = `${data.cloudflareUrl.replace(/\/$/, '')}/?view=student&pin=${session.pin}`;
+        navigator.clipboard?.writeText(fullLink).catch(() => {});
+        setCopiedLink(true);
+        setTimeout(() => setCopiedLink(false), 2500);
+      } else {
+        setOnlineLinkError(data?.error || 'Online link generate nahi ho paaya. Internet connection check karein.');
+      }
+    } catch {
+      setOnlineLinkError('Server se connection nahi ho paaya. Settings mein Server URL check karein.');
+    } finally {
+      setIsGeneratingOnlineLink(false);
+    }
+  };
+
+  const openWhatsAppInvite = (targetUrl: string) => {
+    const text = `🏛️ *ଇତିହାସ ଜ୍ଞାନ (ITIHAS GYAN) - ଲାଇଭ୍ କ୍ଲାସ କୁଇଜ୍*\n\nସମସ୍ତ ଛାତ୍ରଛାତ୍ରୀ ତଳେ ଦିଆଯାଇଥିବା ଲିଙ୍କ୍ ଉପରେ କ୍ଲିକ୍ କରି କୁଇଜ୍‌ରେ ଯୋଗ ଦିଅନ୍ତୁ:\n\n${targetUrl}\n\nSession PIN: ${session.pin}`;
+    window.open(`https://api.whatsapp.com/send?text=${encodeURIComponent(text)}`, '_blank');
+  };
 
   const shareOnWhatsApp = () => {
-    const text = `🏛️ *ଇତିହାସ ଜ୍ଞାନ (ITIHAS GYAN) - ଲାଇଭ୍ କ୍ଲାସ କୁଇଜ୍*\n\nସମସ୍ତ ଛାତ୍ରଛାତ୍ରୀ ଏହି ଲିଙ୍କ୍ ଉପରେ କ୍ଲିକ୍ କରି କୁଇଜ୍‌ରେ ଯୋଗ ଦିଅନ୍ତୁ (Google Meet ପରି):\n🔗 ${joinUrl}\n\n🔑 *Session PIN:* ${session.pin}`;
-    window.open(`https://api.whatsapp.com/send?text=${encodeURIComponent(text)}`, '_blank');
+    openWhatsAppInvite(joinUrl);
   };
 
   // Initialize teacher session on mount
@@ -164,7 +259,7 @@ export const TeacherControlScreen: React.FC<TeacherControlScreenProps> = ({
     // Dual-redundancy polling check every 2.5s to ensure 100% sync
     const pollInterval = setInterval(() => {
       if (!session.pin) return;
-      fetch(`/api/session/${session.pin}`)
+      fetch(apiUrl(`/api/session/${session.pin}`))
         .then((res) => res.json())
         .then((data) => {
           if (data && data.found) {
@@ -355,29 +450,34 @@ export const TeacherControlScreen: React.FC<TeacherControlScreenProps> = ({
     }
   };
 
-  const copyJoinLink = () => {
-    navigator.clipboard.writeText(joinUrl);
+  const copyJoinLink = (targetUrl?: string) => {
+    navigator.clipboard.writeText(targetUrl || joinUrl);
     setCopiedLink(true);
     setTimeout(() => setCopiedLink(false), 2000);
   };
 
   const handleEndQuiz = async () => {
-    if (confirm('Are you sure you want to conclude this live quiz session?')) {
+    if (confirm('Are you sure you want to conclude this live quiz session? (ଏହି କ୍ଲାସ୍ ବନ୍ଦ କଲେ ବର୍ତ୍ତମାନର QR କୋଡ୍ ଓ ଲିଙ୍କ୍ ମଧ୍ୟ ବନ୍ଦ ହୋଇଯିବ)')) {
       realtimeService.endSession(session.pin);
       await db.sessions.update(session.id, {
         status: 'ended',
         endedAt: new Date().toISOString()
       });
-      onBack();
+      if (onSessionEnded) {
+        onSessionEnded();
+      } else {
+        onBack();
+      }
     }
   };
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
     try {
+      syncServerInfo();
       realtimeService.initTeacherSession(session, questions);
       if (session.pin) {
-        const res = await fetch(`/api/session/${session.pin}`);
+        const res = await fetch(apiUrl(`/api/session/${session.pin}`));
         const data = await res.json();
         if (data && data.found) {
           if (data.handRaises && Array.isArray(data.handRaises)) {
@@ -449,7 +549,7 @@ export const TeacherControlScreen: React.FC<TeacherControlScreenProps> = ({
           </div>
 
           <button
-            onClick={copyJoinLink}
+            onClick={() => copyJoinLink()}
             className="px-3.5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-bold flex items-center gap-1.5 transition-colors"
           >
             <Copy className="w-4 h-4 text-emerald-400" />
@@ -483,6 +583,123 @@ export const TeacherControlScreen: React.FC<TeacherControlScreenProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Google Meet-Style Student Join Link & QR Share Bar */}
+      <div className="bg-white rounded-3xl p-4 sm:p-5 border border-slate-200 shadow-sm flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+        <div className="space-y-1.5 min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
+              <Link2 className="w-3.5 h-3.5" />
+              <span>Google Meet ପରି Student Join Link</span>
+            </span>
+            {onlineJoinUrl ? (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                <Globe className="w-3.5 h-3.5" />
+                <span>Online Link Active (Mobile Data + WhatsApp Ready)</span>
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-amber-50 text-amber-800 border border-amber-200">
+                <Wifi className="w-3.5 h-3.5" />
+                <span>Offline / Classroom Wi-Fi Link</span>
+              </span>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-2xl px-3.5 py-2">
+            <span className="font-mono text-xs sm:text-sm text-slate-800 font-semibold truncate select-all flex-1">
+              {joinUrl}
+            </span>
+          </div>
+
+          {onlineLinkError && (
+            <p className="text-xs text-rose-600 font-medium">{onlineLinkError}</p>
+          )}
+          {/^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(joinUrl) && (
+            <p className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-xl px-3 py-2 font-semibold">
+              ⚠️ Abhi link "localhost" dikha raha hai — doosre phone par nahi khulega! Pehle upar/neeche "Server URL" connect karein ya "Generate Online Link" dabayein.
+            </p>
+          )}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
+          {!onlineJoinUrl && (
+            <button
+              onClick={handleGenerateOnlineLink}
+              disabled={isGeneratingOnlineLink}
+              className="px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-xs font-bold flex items-center gap-1.5 transition-colors shadow-xs cursor-pointer"
+            >
+              {isGeneratingOnlineLink ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Globe className="w-4 h-4" />
+              )}
+              <span>{isGeneratingOnlineLink ? 'Generating Online Link...' : 'Generate Online Link'}</span>
+            </button>
+          )}
+
+          <button
+            onClick={() => copyJoinLink(joinUrl)}
+            className="px-3.5 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold flex items-center gap-1.5 transition-colors border border-slate-200 cursor-pointer"
+          >
+            <Copy className="w-4 h-4 text-emerald-600" />
+            <span>{copiedLink ? 'କପି ହେଲା!' : 'Copy Link'}</span>
+          </button>
+
+          <button
+            onClick={shareOnWhatsApp}
+            className="px-3.5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1.5 transition-colors shadow-xs cursor-pointer"
+          >
+            <Share2 className="w-4 h-4" />
+            <span>WhatsApp</span>
+          </button>
+
+          <button
+            onClick={() => setIsQrModalOpen(true)}
+            className="px-3.5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold flex items-center gap-1.5 transition-colors shadow-xs cursor-pointer"
+          >
+            <QrCode className="w-4 h-4 text-amber-300" />
+            <span>QR Code</span>
+          </button>
+
+          <button
+            onClick={() => {
+              navigator.clipboard.writeText(smartPanelUrl);
+              setCopiedPanelLink(true);
+              setTimeout(() => setCopiedPanelLink(false), 2000);
+            }}
+            className="px-3.5 py-2.5 rounded-xl bg-amber-100 hover:bg-amber-200 text-amber-950 text-xs font-bold flex items-center gap-1.5 transition-colors border border-amber-300 cursor-pointer"
+            title="LG Digital Smart Panel Link Copy"
+          >
+            <Monitor className="w-4 h-4 text-amber-700" />
+            <span>{copiedPanelLink ? 'Panel Link Copied!' : `LG Panel (PIN: ${session.pin})`}</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Mobile APK Server URL Setup Banner (Shown only inside APK when Server URL is missing) */}
+      {isNativeMobileApp() && !configuredBase && (
+        <div className="bg-amber-50 border border-amber-300 rounded-3xl p-4 space-y-2.5 shadow-xs">
+          <div className="flex items-center gap-2 text-xs font-bold text-amber-950">
+            <Globe className="w-4 h-4 text-amber-600 shrink-0" />
+            <span>ମୋବାଇଲ୍ APK କୁ LG Smart Panel ଓ Online ଛାତ୍ରଙ୍କ ସହ ଯୋଡ଼ିବା ପାଇଁ Server URL ଦିଅନ୍ତୁ:</span>
+          </div>
+          <div className="flex flex-col sm:flex-row gap-2">
+            <input
+              type="text"
+              placeholder="ଯଥା: https://itihas-gyan.onrender.com କିମ୍ବା https://xxxx.trycloudflare.com"
+              value={apkServerUrlInput}
+              onChange={(e) => setApkServerUrlInput(e.target.value)}
+              className="flex-1 px-3 py-2 rounded-xl border border-amber-300 bg-white text-xs font-mono text-slate-800"
+            />
+            <button
+              onClick={handleSaveApkServerUrl}
+              className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold shrink-0"
+            >
+              Connect Server
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Refresh Feedback Alert */}
       {refreshToast && (
@@ -896,39 +1113,88 @@ export const TeacherControlScreen: React.FC<TeacherControlScreenProps> = ({
 
       {/* QR Code Modal for Classroom Display */}
       {isQrModalOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl max-w-md w-full p-6 text-center space-y-4 shadow-2xl">
+        <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 text-center space-y-4 shadow-2xl my-auto">
             <h3 className="font-odia font-bold text-xl text-slate-900">
               କୁଇଜ୍ ଯୋଗଦାନ QR କୋଡ୍ (Student Join)
             </h3>
             <p className="text-xs text-slate-500">
-              ମୋବାଇଲ୍ କ୍ୟାମେରା ବା Google Lens ଦ୍ୱାରା ସ୍କାନ୍ କରି ସିଧାସଳଖ ଯୋଗ ଦିଅନ୍ତୁ:
+              ମୋବାଇଲ୍ କ୍ୟାମେରା ବା Google Lens ଦ୍ୱାରା ସ୍କାନ୍ କରି କିମ୍ବା WhatsApp ଲିଙ୍କ୍ କ୍ଲିକ୍ କରି ସିଧାସଳଖ ଯୋଗ ଦିଅନ୍ତୁ:
             </p>
 
+            {/* Switch between Online Link & Offline Wi-Fi Link */}
+            <div className="grid grid-cols-2 gap-2 bg-slate-100 p-1 rounded-2xl">
+              <button
+                onClick={() => setQrMode('auto')}
+                className={`py-2 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all ${
+                  qrMode === 'auto' && onlineJoinUrl
+                    ? 'bg-white text-emerald-700 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <Globe className="w-3.5 h-3.5" />
+                <span>Online Link</span>
+              </button>
+              <button
+                onClick={() => setQrMode('wifi')}
+                className={`py-2 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all ${
+                  qrMode === 'wifi' || !onlineJoinUrl
+                    ? 'bg-white text-amber-700 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <Wifi className="w-3.5 h-3.5" />
+                <span>Offline Wi-Fi</span>
+              </button>
+            </div>
+
+            {!onlineJoinUrl && (
+              <button
+                onClick={handleGenerateOnlineLink}
+                disabled={isGeneratingOnlineLink}
+                className="w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-xs font-bold flex items-center justify-center gap-1.5 transition-colors shadow-xs"
+              >
+                {isGeneratingOnlineLink ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Globe className="w-4 h-4" />
+                )}
+                <span>{isGeneratingOnlineLink ? 'Online Link Ban Raha Hai...' : 'Generate Google Meet-Style Online Link'}</span>
+              </button>
+            )}
+
+            {onlineLinkError && (
+              <p className="text-xs text-rose-600 font-medium">{onlineLinkError}</p>
+            )}
+
             <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 inline-block shadow-inner">
-              <QRCodeSVG value={joinUrl} size={220} level="M" />
+              <QRCodeSVG value={activeQrUrl} size={220} level="M" />
             </div>
 
             {/* Direct Join Link & Copy */}
             <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3 text-left space-y-2">
               <div className="flex items-center justify-between text-[11px] font-bold text-slate-500">
-                <span>Google Meet ପରି Student Join Link:</span>
+                <span>
+                  {qrMode === 'wifi' || !onlineJoinUrl
+                    ? 'Classroom Wi-Fi Student Join Link:'
+                    : 'Online Student Join Link (Anywhere / WhatsApp):'}
+                </span>
               </div>
               <div className="font-mono text-xs text-slate-800 break-all bg-white p-2.5 rounded-xl border border-slate-200 select-all font-semibold">
-                {joinUrl}
+                {activeQrUrl}
               </div>
 
               {/* Action Buttons: WhatsApp Share & Copy */}
               <div className="flex gap-2 pt-1">
                 <button
-                  onClick={shareOnWhatsApp}
+                  onClick={() => openWhatsAppInvite(activeQrUrl)}
                   className="flex-1 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center justify-center gap-1.5 transition-colors shadow-xs"
                 >
                   <Share2 className="w-4 h-4" />
                   <span>WhatsApp ରେ ପଠାନ୍ତୁ</span>
                 </button>
                 <button
-                  onClick={copyJoinLink}
+                  onClick={() => copyJoinLink(activeQrUrl)}
                   className="px-4 py-2.5 rounded-xl bg-white hover:bg-slate-100 text-slate-800 text-xs font-bold flex items-center justify-center gap-1.5 transition-colors border border-slate-300"
                 >
                   <Copy className="w-4 h-4 text-emerald-600" />
@@ -941,11 +1207,11 @@ export const TeacherControlScreen: React.FC<TeacherControlScreenProps> = ({
             <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3 text-left space-y-1.5">
               <div className="flex items-center gap-1.5 text-[11px] font-bold text-slate-600">
                 <Globe className="w-3.5 h-3.5 text-blue-600" />
-                <span>Custom Online Link (ଯଦି Tunnel ବା Cloud Link ଅଛି):</span>
+                <span>Custom Online Link (ଯଦି ନିଜସ୍ୱ Render ବା Domain ଲିଙ୍କ୍ ଅଛି):</span>
               </div>
               <input
                 type="text"
-                placeholder="ଯଥା: https://xxxx.loca.lt କିମ୍ବା render ଲିଙ୍କ୍"
+                placeholder="ଯଥା: https://itihas-gyan.onrender.com"
                 value={customOnlineUrl}
                 onChange={(e) => {
                   setCustomOnlineUrl(e.target.value);
@@ -962,14 +1228,15 @@ export const TeacherControlScreen: React.FC<TeacherControlScreenProps> = ({
               </div>
             </div>
 
-            {/* Wi-Fi Alert / Help info */}
+            {/* Connection Help info */}
             <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 text-left text-xs text-amber-900 space-y-1">
               <div className="font-bold flex items-center gap-1.5 text-amber-950">
                 <Info className="w-4 h-4 text-amber-600 shrink-0" />
-                <span>ସୂଚନା (Wi-Fi Requirement):</span>
+                <span>ସୂଚନା (Join Modes):</span>
               </div>
               <p className="text-[11px] text-amber-800 leading-relaxed">
-                ଶିକ୍ଷକଙ୍କ କମ୍ପ୍ୟୁଟର ଏବଂ ଛାତ୍ରଙ୍କ ମୋବାଇଲ୍ <strong>ଗୋଟିଏ Wi-Fi କିମ୍ବା ମୋବାଇଲ୍ ହଟସ୍ପଟ୍</strong> ସହ କନେକ୍ଟ ଥିବା ଦରକାର।
+                <strong>Online Link:</strong> ଛାତ୍ରମାନେ ନିଜ ମୋବାଇଲ୍ ଡାଟାରେ ଯେକୌଣସି ସ୍ଥାନରୁ WhatsApp ଲିଙ୍କ୍ / QR ଦ୍ୱାରା ଯୋଗ ଦେଇପାରିବେ।<br />
+                <strong>Offline Wi-Fi:</strong> ବିନା ଇଣ୍ଟରନେଟ୍‌ରେ ଗୋଟିଏ Wi-Fi / ହଟସ୍ପଟ୍‌ରେ ଯୋଗ ଦିଅନ୍ତୁ।
               </p>
             </div>
 

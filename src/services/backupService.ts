@@ -1,5 +1,6 @@
 import { db } from '../db';
-import type { Student, Question, QuizSession, QuestionScoreRecord, AppSettings } from '../types';
+import type { Student, CourseEnrolment, Question, QuizSession, QuestionScoreRecord, AppSettings } from '../types';
+import { STUDENTS_REPLACED_FLAG_KEY } from './studentDataService';
 
 export interface FullBackupPayload {
   version: string;
@@ -7,6 +8,7 @@ export interface FullBackupPayload {
   appName: string;
   data: {
     students: Student[];
+    enrolments?: CourseEnrolment[];
     questions: Question[];
     sessions: QuizSession[];
     scores: QuestionScoreRecord[];
@@ -30,6 +32,7 @@ export interface BackupValidation {
 // Create and trigger download of Full Application Backup (.json)
 export async function exportFullBackup(): Promise<void> {
   const students = await db.students.toArray();
+  const enrolments = await db.enrolments.toArray();
   const questions = await db.questions.toArray();
   const sessions = await db.sessions.toArray();
   const scores = await db.scores.toArray();
@@ -41,6 +44,7 @@ export async function exportFullBackup(): Promise<void> {
     appName: 'ଇତିହାସ ଜ୍ଞାନ (ITIHASH GYAN)',
     data: {
       students,
+      enrolments,
       questions,
       sessions,
       scores,
@@ -118,15 +122,19 @@ export async function restoreBackup(
   }
 
   const parsed: FullBackupPayload = JSON.parse(jsonText);
-  const { students = [], questions = [], sessions = [], scores = [], settings } = parsed.data;
+  const { students = [], enrolments = [], questions = [], sessions = [], scores = [], settings } = parsed.data;
 
   try {
-    await db.transaction('rw', [db.students, db.questions, db.sessions, db.scores, db.settings], async () => {
+    await db.transaction('rw', [db.students, db.enrolments, db.questions, db.sessions, db.scores, db.settings], async () => {
       if (mode === 'replace') {
         await db.students.clear();
+        await db.enrolments.clear();
         await db.questions.clear();
         await db.sessions.clear();
         await db.scores.clear();
+        if (typeof localStorage !== 'undefined') {
+          localStorage.setItem(STUDENTS_REPLACED_FLAG_KEY, 'true');
+        }
       }
 
       if (students.length > 0) {
@@ -141,6 +149,10 @@ export async function restoreBackup(
             }
           }
         }
+      }
+
+      if (enrolments.length > 0 && mode === 'replace') {
+        await db.enrolments.bulkAdd(enrolments);
       }
 
       if (questions.length > 0) {

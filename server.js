@@ -4,6 +4,8 @@ import { Server } from 'socket.io';
 import cors from 'cors';
 import os from 'os';
 import path from 'path';
+import fs from 'fs';
+import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -45,9 +47,10 @@ export function getLocalIPAddress() {
   return 'localhost';
 }
 
-// In-memory active live quiz sessions
+// In-memory active live quiz sessions & ended session PIN registry
 // Map: sessionPin -> SessionState
 const activeSessions = new Map();
+const endedSessionMap = new Map();
 
 /*
 SessionState:
@@ -72,6 +75,109 @@ SessionState:
 */
 
 let cloudflareUrl = '';
+let activeTunnelProcess = null;
+let tunnelStatus = 'idle'; // 'idle' | 'connecting' | 'active' | 'error'
+let tunnelError = '';
+let tunnelWaiters = [];
+
+function resolveTunnelWaiters(result) {
+  const waiters = tunnelWaiters;
+  tunnelWaiters = [];
+  for (const resolve of waiters) {
+    resolve(result);
+  }
+}
+
+function startCloudflareTunnel() {
+  if (cloudflareUrl) {
+    return Promise.resolve({ ok: true, cloudflareUrl, status: 'active' });
+  }
+
+  const cloudflaredPath = path.join(__dirname, 'cloudflared.exe');
+  if (!fs.existsSync(cloudflaredPath)) {
+    tunnelStatus = 'error';
+    tunnelError = 'cloudflared.exe not found in project folder.';
+    return Promise.resolve({ ok: false, cloudflareUrl: null, status: 'error', error: tunnelError });
+  }
+
+  if (activeTunnelProcess && tunnelStatus === 'connecting') {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        resolve({ ok: false, cloudflareUrl: null, status: tunnelStatus, error: 'Tunnel connection timed out. Check internet.' });
+      }, 15000);
+      tunnelWaiters.push((res) => {
+        clearTimeout(timer);
+        resolve(res);
+      });
+    });
+  }
+
+  tunnelStatus = 'connecting';
+  tunnelError = '';
+
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      if (!cloudflareUrl) {
+        resolve({ ok: false, cloudflareUrl: null, status: tunnelStatus, error: 'Could not obtain online link in 15s. Please check internet connection.' });
+      }
+    }, 15000);
+
+    tunnelWaiters.push((res) => {
+      clearTimeout(timer);
+      resolve(res);
+    });
+
+    try {
+      activeTunnelProcess = spawn(cloudflaredPath, ['tunnel', '--url', `http://127.0.0.1:${PORT}`], {
+        cwd: __dirname,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true
+      });
+
+      const handleOutput = (chunk) => {
+        const text = chunk.toString();
+        const match = text.match(/https:\/\/[a-zA-Z0-9-]+\.trycloudflare\.com/);
+        if (match && !cloudflareUrl) {
+          cloudflareUrl = match[0];
+          tunnelStatus = 'active';
+          tunnelError = '';
+          console.log(`\n>>> Cloudflare Public Tunnel Active: ${cloudflareUrl} <<<\n`);
+          io.emit('tunnel_url_updated', { cloudflareUrl, status: 'active' });
+          resolveTunnelWaiters({ ok: true, cloudflareUrl, status: 'active' });
+        }
+      };
+
+      activeTunnelProcess.stdout.on('data', handleOutput);
+      activeTunnelProcess.stderr.on('data', handleOutput);
+
+      activeTunnelProcess.on('error', (err) => {
+        activeTunnelProcess = null;
+        tunnelStatus = 'error';
+        tunnelError = err.message || 'Failed to launch cloudflared.exe';
+        resolveTunnelWaiters({ ok: false, cloudflareUrl: null, status: 'error', error: tunnelError });
+      });
+
+      activeTunnelProcess.on('exit', () => {
+        const wasResolved = Boolean(cloudflareUrl);
+        activeTunnelProcess = null;
+        if (!wasResolved) {
+          tunnelStatus = 'error';
+          tunnelError = 'Online tunnel closed before connecting. Check internet connection.';
+          resolveTunnelWaiters({ ok: false, cloudflareUrl: null, status: 'error', error: tunnelError });
+        } else {
+          cloudflareUrl = '';
+          tunnelStatus = 'idle';
+          io.emit('tunnel_url_updated', { cloudflareUrl: null, status: 'idle' });
+        }
+      });
+    } catch (err) {
+      activeTunnelProcess = null;
+      tunnelStatus = 'error';
+      tunnelError = err.message || 'Failed to start tunnel';
+      resolveTunnelWaiters({ ok: false, cloudflareUrl: null, status: 'error', error: tunnelError });
+    }
+  });
+}
 
 // Health & network info endpoint
 app.get('/api/info', (req, res) => {
@@ -81,8 +187,25 @@ app.get('/api/info', (req, res) => {
     appName: 'ଇତିହାସ ଜ୍ଞାନ (ITIHASH GYAN)',
     localIp,
     cloudflareUrl: cloudflareUrl || null,
+    tunnelStatus: cloudflareUrl ? 'active' : tunnelStatus,
+    hasCloudflared: fs.existsSync(path.join(__dirname, 'cloudflared.exe')),
     port: PORT,
     joinUrlBase: `http://${localIp}:${PORT}/student`
+  });
+});
+
+// Active Live Session summary (for auto-filling PIN when student opens base join link)
+app.get('/api/active-session', (_req, res) => {
+  if (activeSessions.size === 0) {
+    return res.json({ found: false });
+  }
+  const sessionsArr = Array.from(activeSessions.values());
+  const latest = sessionsArr[sessionsArr.length - 1];
+  res.json({
+    found: true,
+    count: sessionsArr.length,
+    pin: latest.pin,
+    title: latest.title
   });
 });
 
@@ -90,7 +213,15 @@ app.get('/api/info', (req, res) => {
 app.get('/api/session/:pin', (req, res) => {
   const pin = String(req.params.pin || '').trim();
   const session = activeSessions.get(pin);
-  if (!session) return res.json({ found: false });
+  if (!session) {
+    return res.json({
+      found: false,
+      ended: endedSessionMap.has(pin),
+      message: endedSessionMap.has(pin)
+        ? 'ଏହି କ୍ଲାସ୍ ଏବଂ QR କୋଡ୍ ଶିକ୍ଷକ ବନ୍ଦ କରିଦେଇଛନ୍ତି। (Class closed by teacher.)'
+        : 'Session not active'
+    });
+  }
   const currentQ = (session.questions && session.questions[session.currentQuestionIndex])
     ? session.questions[session.currentQuestionIndex]
     : null;
@@ -98,6 +229,8 @@ app.get('/api/session/:pin', (req, res) => {
     found: true,
     pin: session.pin,
     title: session.title,
+    subject: session.subject,
+    topic: session.topic,
     currentQuestionIndex: session.currentQuestionIndex,
     currentQuestion: currentQ,
     questions: session.questions || [],
@@ -106,16 +239,25 @@ app.get('/api/session/:pin', (req, res) => {
     students: Array.from(session.students.values()),
     isTeacherOnline: session.isTeacherOnline !== false,
     revealAnswer: session.revealAnswer,
-    showDescription: session.showDescription
+    showDescription: session.showDescription,
+    leaderboard: Array.from(session.scores.values()).sort((a, b) => b.totalMarks - a.totalMarks)
   });
 });
 
 app.post('/api/tunnel', (req, res) => {
   if (req.body && req.body.url) {
     cloudflareUrl = req.body.url;
+    tunnelStatus = 'active';
+    tunnelError = '';
+    io.emit('tunnel_url_updated', { cloudflareUrl, status: 'active' });
     console.log(`\n>>> Cloudflare Public Tunnel Active: ${cloudflareUrl} <<<\n`);
   }
   res.json({ ok: true, cloudflareUrl });
+});
+
+app.post('/api/tunnel/start', async (_req, res) => {
+  const result = await startCloudflareTunnel();
+  res.status(result.ok ? 200 : 503).json(result);
 });
 
 // AI Info & Proxy endpoints for secure server-side execution
@@ -251,6 +393,7 @@ io.on('connection', (socket) => {
   socket.on('teacher_init_session', ({ session, questions }) => {
     if (!session || !session.pin) return;
     const pin = String(session.pin).trim();
+    endedSessionMap.delete(pin);
     socket.join(`session_${pin}`);
 
     let current = activeSessions.get(pin);
@@ -301,33 +444,59 @@ io.on('connection', (socket) => {
     console.log(`[Teacher] Session initialized: PIN ${pin} (Socket ID: ${socket.id})`);
   });
 
+  // LG DIGITAL SMART PANEL / PRESENTATION joins a session by PIN
+  socket.on('presentation_join', ({ pin }) => {
+    if (!pin) return;
+    const cleanPin = String(pin).trim();
+    if (endedSessionMap.has(cleanPin)) {
+      socket.emit('session_ended', {
+        pin: cleanPin,
+        message: 'ଏହି କ୍ଲାସ୍ ଏବଂ QR କୋଡ୍ ଶିକ୍ଷକ ବନ୍ଦ କରିଦେଇଛନ୍ତି। (Class has been closed.)'
+      });
+      return;
+    }
+
+    const session = activeSessions.get(cleanPin);
+    if (!session) {
+      socket.emit('join_error', {
+        ended: false,
+        message: 'ଏହି PIN ସକ୍ରିୟ ନାହିଁ। ଶିକ୍ଷକଙ୍କ ମୋବାଇଲ୍‌ରେ Live Quiz ଆରମ୍ଭ ହେବା ପରେ ପୁଣି ଚେଷ୍ଟା କରନ୍ତୁ।'
+      });
+      return;
+    }
+
+    socket.join(`session_${cleanPin}`);
+    socket.emit('session_state_updated', serializeSession(session));
+    socket.emit('hand_raises_updated', {
+      handRaises: session.handRaises,
+      latest: session.handRaises[session.handRaises.length - 1] || null
+    });
+    socket.emit('student_list_updated', {
+      studentCount: session.students.size,
+      students: Array.from(session.students.values())
+    });
+    console.log(`[Smart Panel] Presentation joined session ${cleanPin}`);
+  });
+
   // STUDENT joins a session
   socket.on('student_join', ({ pin, rollNo, name }) => {
     if (!pin || !rollNo) return;
     const cleanPin = String(pin).trim();
-    let session = activeSessions.get(cleanPin);
+    if (endedSessionMap.has(cleanPin)) {
+      socket.emit('join_error', {
+        ended: true,
+        message: 'ଏହି କ୍ଲାସ୍ ଏବଂ QR କୋଡ୍ ଶିକ୍ଷକ ବନ୍ଦ କରିଦେଇଛନ୍ତି। ନୂଆ କ୍ଲାସ୍‌ର QR କୋଡ୍ ସ୍କାନ୍ କରନ୍ତୁ। (This class & QR code has been closed.)'
+      });
+      return;
+    }
 
-    // Auto-create session if teacher hasn't initialized yet so student is not dropped
+    const session = activeSessions.get(cleanPin);
     if (!session) {
-      session = {
-        pin: cleanPin,
-        sessionId: cleanPin,
-        title: 'Live Quiz Session',
-        subject: '',
-        topic: '',
-        currentQuestionIndex: 0,
-        questions: [],
-        revealAnswer: false,
-        showDescription: false,
-        timerDuration: 30,
-        timerRemaining: 30,
-        isTimerRunning: false,
-        handRaises: [],
-        sequenceCounter: 0,
-        students: new Map(),
-        scores: new Map()
-      };
-      activeSessions.set(cleanPin, session);
+      socket.emit('join_error', {
+        ended: false,
+        message: 'ଏହି ସେସନ୍‌ଟି ବର୍ତ୍ତମାନ ସକ୍ରିୟ ନାହିଁ କିମ୍ବା ବନ୍ଦ ହୋଇଯାଇଛି। ଦୟାକରି ଶିକ୍ଷକଙ୍କ ନୂଆ QR କୋଡ୍ ସ୍କାନ୍ କରନ୍ତୁ। (Session not active or closed.)'
+      });
+      return;
     }
 
     // Prevent duplicate participation with different names or sockets
@@ -370,29 +539,15 @@ io.on('connection', (socket) => {
   socket.on('student_raise_hand', ({ pin, rollNo, name }) => {
     if (!pin || !rollNo) return;
     const cleanPin = String(pin).trim();
-    let session = activeSessions.get(cleanPin);
+    if (endedSessionMap.has(cleanPin)) {
+      socket.emit('session_ended', { message: 'ଏହି କ୍ଲାସ୍ ଶିକ୍ଷକ ବନ୍ଦ କରିଦେଇଛନ୍ତି। (Class has ended.)' });
+      return;
+    }
 
-    // Auto-create session if not yet present
+    const session = activeSessions.get(cleanPin);
     if (!session) {
-      session = {
-        pin: cleanPin,
-        sessionId: cleanPin,
-        title: 'Live Quiz Session',
-        subject: '',
-        topic: '',
-        currentQuestionIndex: 0,
-        questions: [],
-        revealAnswer: false,
-        showDescription: false,
-        timerDuration: 30,
-        timerRemaining: 30,
-        isTimerRunning: false,
-        handRaises: [],
-        sequenceCounter: 0,
-        students: new Map(),
-        scores: new Map()
-      };
-      activeSessions.set(cleanPin, session);
+      socket.emit('join_error', { ended: false, message: 'Session is not active or has ended.' });
+      return;
     }
 
     // Ensure student socket is in room
@@ -529,13 +684,18 @@ io.on('connection', (socket) => {
     io.to(`session_${cleanPin}`).emit('leaderboard_updated', { leaderboard });
   });
 
-  // TEACHER ends session
+  // TEACHER ends session (closes class QR code & invalidates old link)
   socket.on('teacher_end_session', ({ pin }) => {
     const cleanPin = String(pin).trim();
     const session = activeSessions.get(cleanPin);
+    endedSessionMap.set(cleanPin, { endedAt: Date.now() });
+    io.to(`session_${cleanPin}`).emit('session_ended', {
+      pin: cleanPin,
+      message: 'ଏହି କ୍ଲାସ୍ ଏବଂ QR କୋଡ୍ ଶିକ୍ଷକ ବନ୍ଦ କରିଦେଇଛନ୍ତି। (Class has concluded.)'
+    });
     if (session) {
-      io.to(`session_${cleanPin}`).emit('session_ended', { message: 'Session has concluded.' });
       activeSessions.delete(cleanPin);
+      console.log(`[Teacher] Session ended & QR closed: PIN ${cleanPin}`);
     }
   });
 
@@ -589,4 +749,21 @@ httpServer.listen(PORT, '0.0.0.0', () => {
   console.log(`  Classroom Wi-Fi:  http://${ip}:${PORT}`);
   console.log(`  Student Join URL: http://${ip}:${PORT}/?view=student`);
   console.log(`====================================================`);
+});
+
+function cleanupTunnel() {
+  if (activeTunnelProcess && !activeTunnelProcess.killed) {
+    activeTunnelProcess.kill();
+    activeTunnelProcess = null;
+  }
+}
+
+process.on('SIGINT', () => {
+  cleanupTunnel();
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  cleanupTunnel();
+  process.exit(0);
 });

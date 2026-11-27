@@ -1,11 +1,14 @@
 import { io, Socket } from 'socket.io-client';
 import type { HandRaiseRecord } from '../types';
+import { getRealtimeSocketUrl } from './serverConfig';
 
 class ClassroomRealtimeService {
   private socket: Socket | null = null;
   private channel: BroadcastChannel | null = null;
   private isTeacher = false;
+  private presentationPin: string = '';
   private currentPin: string = '';
+  private currentUrl: string = '';
   private teacherSessionData: { session: any; questions: any[] } | null = null;
   private studentJoinData: { pin: string; rollNo: string; name: string } | null = null;
   private pendingRaiseHand: { pin: string; rollNo: string; name: string } | null = null;
@@ -25,22 +28,33 @@ class ClassroomRealtimeService {
     return this.connectedStatus && (this.socket?.connected ?? false);
   }
 
+  public reconnect(serverUrl?: string): void {
+    if (this.socket) {
+      this.socket.disconnect();
+      this.socket = null;
+      this.connectedStatus = false;
+    }
+    this.connect(serverUrl);
+  }
+
   // Connect to the Socket.IO server
   public connect(serverUrl?: string): void {
+    const url = getRealtimeSocketUrl(serverUrl);
+
     if (this.socket) {
-      if (!this.socket.connected) {
-        this.socket.connect();
+      if (serverUrl && this.currentUrl && this.currentUrl !== url) {
+        this.socket.disconnect();
+        this.socket = null;
+        this.connectedStatus = false;
+      } else {
+        if (!this.socket.connected) {
+          this.socket.connect();
+        }
+        return;
       }
-      return;
     }
 
-    const host = window.location.hostname;
-    const protocol = window.location.protocol;
-    const defaultUrl = window.location.port === '5173'
-      ? `${protocol}//${host}:3000`
-      : window.location.origin;
-
-    const url = serverUrl || defaultUrl;
+    this.currentUrl = url;
 
     try {
       this.socket = io(url, {
@@ -60,6 +74,11 @@ class ClassroomRealtimeService {
         if (this.isTeacher && this.teacherSessionData) {
           console.log('[Realtime] Emitting teacher_init_session for PIN', this.teacherSessionData.session?.pin);
           this.socket?.emit('teacher_init_session', this.teacherSessionData);
+        }
+
+        // Auto-sync presentation panel upon connect or reconnect
+        if (this.presentationPin) {
+          this.socket?.emit('presentation_join', { pin: this.presentationPin });
         }
 
         // Auto-sync student join upon connect or reconnect
@@ -106,7 +125,8 @@ class ClassroomRealtimeService {
         'teacher_status_changed',
         'raise_hand_ack',
         'join_success',
-        'join_error'
+        'join_error',
+        'tunnel_url_updated'
       ];
 
       for (const ev of serverEvents) {
@@ -141,6 +161,7 @@ class ClassroomRealtimeService {
 
   public joinAsStudent(pin: string, rollNo: string, name: string): void {
     this.isTeacher = false;
+    this.presentationPin = '';
     this.currentPin = pin;
     this.studentJoinData = { pin, rollNo, name };
     this.connect();
@@ -150,6 +171,18 @@ class ClassroomRealtimeService {
     }
 
     this.broadcastLocal('student_join', { pin, rollNo, name });
+  }
+
+  public joinAsPresentation(pin: string): void {
+    const cleanPin = pin.trim();
+    if (!cleanPin) return;
+    this.presentationPin = cleanPin;
+    this.currentPin = cleanPin;
+    this.connect();
+
+    if (this.socket && this.socket.connected) {
+      this.socket.emit('presentation_join', { pin: cleanPin });
+    }
   }
 
   public raiseHand(pin: string, rollNo: string, name: string): void {
@@ -244,6 +277,8 @@ class ClassroomRealtimeService {
 
   public endSession(pin: string): void {
     const cleanPin = pin.trim();
+    this.teacherSessionData = null;
+    this.presentationPin = '';
     if (this.socket && this.socket.connected) {
       this.socket.emit('teacher_end_session', { pin: cleanPin });
     }

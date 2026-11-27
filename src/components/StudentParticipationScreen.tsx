@@ -13,11 +13,13 @@ import {
   HelpCircle,
   Clock,
   WifiOff,
-  RotateCcw
+  RotateCcw,
+  ShieldAlert
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { BrandHeader } from './BrandHeader';
 import { realtimeService } from '../services/socketService';
+import { apiUrl } from '../services/serverConfig';
 import { db } from '../db';
 import type { Question } from '../types';
 
@@ -61,22 +63,113 @@ export const StudentParticipationScreen: React.FC<StudentParticipationScreenProp
   const [showRaiseAlert, setShowRaiseAlert] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshToast, setRefreshToast] = useState(false);
+  const [sessionEndedMessage, setSessionEndedMessage] = useState('');
+  const [antiCheatAlert, setAntiCheatAlert] = useState(false);
+
+  // Sync PIN when URL / parent initialPin updates, or auto-fill if 1 live class is active
+  useEffect(() => {
+    if (initialPin) {
+      setPin(initialPin);
+      return;
+    }
+    if (!isJoined) {
+      fetch(apiUrl('/api/active-session'))
+        .then((res) => res.json())
+        .then((data) => {
+          if (data && data.found && data.pin && data.count === 1) {
+            setPin((prev) => prev || data.pin);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [initialPin, isJoined]);
+
+  const triggerAntiCheatNotice = () => {
+    setAntiCheatAlert(true);
+    setTimeout(() => setAntiCheatAlert(false), 2500);
+  };
+
+  // Anti-Cheating: Disable copy, cut, text selection, and print/copy shortcuts while student is in live quiz
+  useEffect(() => {
+    if (!isJoined || sessionEndedMessage) return;
+
+    const blockEvent = (e: Event) => {
+      e.preventDefault();
+      triggerAntiCheatNotice();
+    };
+
+    const blockKeys = (e: KeyboardEvent) => {
+      const k = e.key.toLowerCase();
+      if (
+        ((e.ctrlKey || e.metaKey) && ['c', 'x', 'a', 'u', 's', 'p'].includes(k)) ||
+        e.key === 'PrintScreen'
+      ) {
+        e.preventDefault();
+        triggerAntiCheatNotice();
+      }
+    };
+
+    document.addEventListener('copy', blockEvent);
+    document.addEventListener('cut', blockEvent);
+    document.addEventListener('selectstart', blockEvent);
+    window.addEventListener('keydown', blockKeys);
+
+    return () => {
+      document.removeEventListener('copy', blockEvent);
+      document.removeEventListener('cut', blockEvent);
+      document.removeEventListener('selectstart', blockEvent);
+      window.removeEventListener('keydown', blockKeys);
+    };
+  }, [isJoined, sessionEndedMessage]);
 
   const handleRefresh = async () => {
-    if (!pin.trim()) return;
     setIsRefreshing(true);
     try {
       if (!realtimeService.isSocketConnected()) {
         realtimeService.connect();
       }
-      if (isJoined && rollNo.trim()) {
-        realtimeService.joinAsStudent(pin.trim(), rollNo.trim(), studentName.trim());
+
+      let activePin = pin.trim();
+      if (!activePin) {
+        const activeRes = await fetch(apiUrl('/api/active-session'));
+        const activeData = await activeRes.json();
+        if (activeData && activeData.found && activeData.pin) {
+          activePin = String(activeData.pin);
+          setPin(activePin);
+          setJoinError('');
+        }
       }
-      const res = await fetch(`/api/session/${pin.trim()}`);
+
+      if (!activePin) {
+        setRefreshToast(true);
+        setTimeout(() => setRefreshToast(false), 2000);
+        return;
+      }
+
+      if (isJoined && rollNo.trim()) {
+        realtimeService.joinAsStudent(activePin, rollNo.trim(), studentName.trim());
+      }
+      const res = await fetch(apiUrl(`/api/session/${activePin}`));
       const data = await res.json();
+      if (data && data.ended) {
+        setSessionEndedMessage(data.message || 'ଏହି କ୍ଲାସ୍ ଏବଂ QR କୋଡ୍ ଶିକ୍ଷକ ବନ୍ଦ କରିଦେଇଛନ୍ତି। (Class has been closed.)');
+        setCurrentQuestion(null);
+        setAllQuestions([]);
+        return;
+      }
       if (data && data.found) {
-        if (data.currentQuestionIndex !== undefined) {
-          setQuestionIndex(data.currentQuestionIndex);
+        const nextIdx = data.currentQuestionIndex;
+        if (nextIdx !== undefined && nextIdx !== questionIndex) {
+          setQuestionIndex(nextIdx);
+          setHasRaisedHand(false);
+          setAssignedRank(null);
+          setSelectedOption(null);
+          setHasAnswered(false);
+          setOptionFeedback(null);
+          setShowRaiseAlert(false);
+        }
+        if (data.revealAnswer !== undefined) {
+          setRevealAnswer(data.revealAnswer);
         }
         if (data.title) {
           setSessionTitle(data.title);
@@ -86,7 +179,7 @@ export const StudentParticipationScreen: React.FC<StudentParticipationScreenProp
         }
         if (data.questions && Array.isArray(data.questions)) {
           setAllQuestions(data.questions);
-          const q = data.currentQuestion || data.questions[data.currentQuestionIndex || 0];
+          const q = data.currentQuestion || data.questions[nextIdx || 0];
           if (q) setCurrentQuestion(q);
         } else if (data.currentQuestion) {
           setCurrentQuestion(data.currentQuestion);
@@ -104,9 +197,20 @@ export const StudentParticipationScreen: React.FC<StudentParticipationScreenProp
     } catch (err) {
       console.error(err);
     } finally {
-      setTimeout(() => setIsRefreshing(false), 500);
+      setTimeout(() => setIsRefreshing(false), 400);
     }
   };
+
+  // Auto-sync when mobile browser / app comes back to foreground
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === 'visible' && isJoined && pin.trim()) {
+        void handleRefresh();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [isJoined, pin, questionIndex]);
 
   // Track realtime socket connection state
   useEffect(() => {
@@ -136,9 +240,15 @@ export const StudentParticipationScreen: React.FC<StudentParticipationScreenProp
     if (!isJoined || !pin.trim()) return;
 
     const fetchSession = () => {
-      fetch(`/api/session/${pin.trim()}`)
+      fetch(apiUrl(`/api/session/${pin.trim()}`))
         .then((res) => res.json())
         .then((data) => {
+          if (data && data.ended) {
+            setSessionEndedMessage(data.message || 'ଏହି କ୍ଲାସ୍ ଏବଂ QR କୋଡ୍ ଶିକ୍ଷକ ବନ୍ଦ କରିଦେଇଛନ୍ତି।');
+            setCurrentQuestion(null);
+            setAllQuestions([]);
+            return;
+          }
           if (data && data.found) {
             if (data.currentQuestionIndex !== undefined) {
               setQuestionIndex(data.currentQuestionIndex);
@@ -273,6 +383,21 @@ export const StudentParticipationScreen: React.FC<StudentParticipationScreenProp
       }
     });
 
+    const unsubEnded = realtimeService.on('session_ended', (data: any) => {
+      setSessionEndedMessage(
+        data?.message || 'ଏହି କ୍ଲାସ୍ ଏବଂ QR କୋଡ୍ ଶିକ୍ଷକ ବନ୍ଦ କରିଦେଇଛନ୍ତି। (Class has been closed.)'
+      );
+      setCurrentQuestion(null);
+      setAllQuestions([]);
+    });
+
+    const unsubJoinErr = realtimeService.on('join_error', (data: any) => {
+      setIsJoined(false);
+      setJoinError(
+        data?.message || 'ଏହି QR କୋଡ୍ / PIN ବର୍ତ୍ତମାନ ସକ୍ରିୟ ନାହିଁ। ଦୟାକରି ନୂଆ QR କୋଡ୍ ସ୍କାନ୍ କରନ୍ତୁ।'
+      );
+    });
+
     return () => {
       unsubQ();
       unsubReveal();
@@ -281,20 +406,40 @@ export const StudentParticipationScreen: React.FC<StudentParticipationScreenProp
       unsubJoinSuccess();
       window.removeEventListener('raise_hand_ack', unsubAck);
       unsubScore();
+      unsubEnded();
+      unsubJoinErr();
     };
   }, [isJoined, rollNo, allQuestions]);
 
-  const handleJoin = (e: React.FormEvent) => {
+  const handleJoin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!pin.trim() || !rollNo.trim()) {
+    const cleanPin = pin.trim();
+    const cleanRoll = rollNo.trim();
+    if (!cleanPin || !cleanRoll) {
       setJoinError('Please enter both Session PIN and your College Roll Number.');
       return;
     }
 
-    const finalName = studentName.trim() || `Student (${rollNo.trim()})`;
-    realtimeService.joinAsStudent(pin.trim(), rollNo.trim(), finalName);
-    setIsJoined(true);
     setJoinError('');
+    setSessionEndedMessage('');
+
+    try {
+      const res = await fetch(apiUrl(`/api/session/${cleanPin}`));
+      const data = await res.json();
+      if (data && !data.found) {
+        setJoinError(
+          data.message ||
+            'ଏହି କ୍ଲାସ୍ / QR କୋଡ୍ ବନ୍ଦ ହୋଇଯାଇଛି କିମ୍ବା ସକ୍ରିୟ ନାହିଁ। ଦୟାକରି ଶିକ୍ଷକଙ୍କ ନୂଆ QR କୋଡ୍ ସ୍କାନ୍ କରନ୍ତୁ।'
+        );
+        return;
+      }
+    } catch {
+      // Allow socket/local broadcast fallback if offline check fails
+    }
+
+    const finalName = studentName.trim() || `Student (${cleanRoll})`;
+    realtimeService.joinAsStudent(cleanPin, cleanRoll, finalName);
+    setIsJoined(true);
   };
 
   const handleRaiseHand = () => {
@@ -470,9 +615,58 @@ export const StudentParticipationScreen: React.FC<StudentParticipationScreenProp
     );
   }
 
-  // View 2: Active Student Live Participation Arena
+  // View 2B: Session Closed / QR Code Invalidated Screen
+  if (sessionEndedMessage) {
+    return (
+      <div className="min-h-[85vh] flex items-center justify-center p-4">
+        <div className="max-w-md w-full bg-white rounded-3xl shadow-xl border border-slate-200 p-7 text-center space-y-5">
+          <div className="w-16 h-16 rounded-2xl bg-rose-100 text-rose-600 flex items-center justify-center mx-auto">
+            <Lock className="w-8 h-8" />
+          </div>
+          <div className="space-y-2">
+            <h3 className="font-odia font-black text-xl text-slate-900">
+              କ୍ଲାସ୍ ଏବଂ QR କୋଡ୍ ବନ୍ଦ ହୋଇଯାଇଛି
+            </h3>
+            <p className="text-xs text-slate-600 leading-relaxed">
+              {sessionEndedMessage}
+            </p>
+          </div>
+          <div className="p-3 rounded-2xl bg-amber-50 border border-amber-200 text-xs text-amber-900">
+            ମୋଟ ସ୍କୋର (Your Score): <span className="font-mono font-black text-base">{myScore} pts</span>
+          </div>
+          <button
+            onClick={() => {
+              setSessionEndedMessage('');
+              setIsJoined(false);
+              setPin('');
+              setCurrentQuestion(null);
+              setAllQuestions([]);
+            }}
+            className="w-full py-3 rounded-2xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold transition-colors"
+          >
+            ନୂଆ କ୍ଲାସ୍ QR / PIN ଦ୍ୱାରା ଯୋଗ ଦିଅନ୍ତୁ (Join New Class)
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // View 2: Active Student Live Participation Arena (Anti-Copy / Anti-Extract Protected)
   return (
-    <div className="max-w-md mx-auto px-4 py-5 space-y-4">
+    <div
+      className="max-w-md mx-auto px-4 py-5 space-y-4 student-anti-copy no-print-quiz select-none"
+      style={{ userSelect: 'none', WebkitUserSelect: 'none', WebkitTouchCallout: 'none' }}
+      onCopy={(e) => { e.preventDefault(); triggerAntiCheatNotice(); }}
+      onCut={(e) => { e.preventDefault(); triggerAntiCheatNotice(); }}
+      onContextMenu={(e) => { e.preventDefault(); triggerAntiCheatNotice(); }}
+      onDragStart={(e) => e.preventDefault()}
+    >
+      {antiCheatAlert && (
+        <div className="sticky top-2 z-50 bg-rose-700 text-white text-xs font-bold py-2.5 px-4 rounded-2xl shadow-xl flex items-center justify-center gap-2">
+          <ShieldAlert className="w-4 h-4 shrink-0" />
+          <span>Anti-Cheat: ଲାଇଭ୍ କୁଇଜ୍ ସମୟରେ ପ୍ରଶ୍ନ Copy କିମ୍ବା Extract କରିବା ନିଷେଧ ଅଟେ!</span>
+        </div>
+      )}
       {/* Top Student Header */}
       <div className="bg-emerald-900 text-white rounded-3xl p-4 sm:p-5 shadow-lg border border-emerald-800 flex items-center justify-between gap-3">
         <div className="space-y-0.5">
@@ -538,15 +732,27 @@ export const StudentParticipationScreen: React.FC<StudentParticipationScreenProp
 
       {/* Main Question & Participation Card */}
       <div className="bg-white rounded-3xl p-5 sm:p-6 border border-slate-200 shadow-sm space-y-4">
-        {/* Question Counter Header */}
-        <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+        {/* Question Counter Header + Instant Sync Button */}
+        <div className="flex items-center justify-between gap-2 pb-3 border-b border-slate-100">
           <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-100 text-emerald-900 text-xs font-bold uppercase border border-emerald-200">
             <span>ପ୍ରଶ୍ନ {questionIndex + 1}</span>
             {allQuestions.length > 0 && <span>/ {allQuestions.length}</span>}
           </div>
 
-          <div className="text-xs font-bold text-slate-500">
-            {currentQuestion?.pattern ? currentQuestion.pattern.toUpperCase() : 'MCQ'} • {currentQuestion?.marks || 1} Mark
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-bold text-slate-500">
+              {currentQuestion?.pattern ? currentQuestion.pattern.toUpperCase() : 'MCQ'} • {currentQuestion?.marks || 1}M
+            </span>
+            <button
+              type="button"
+              onClick={handleRefresh}
+              disabled={isRefreshing}
+              className="px-2.5 py-1 rounded-xl bg-amber-100 hover:bg-amber-200 text-amber-950 text-[11px] font-bold inline-flex items-center gap-1 border border-amber-300 active:scale-95 transition-all"
+              title="କମ୍ପ୍ୟୁଟରରୁ ନୂଆ ପ୍ରଶ୍ନ ରିଫ୍ରେଶ୍ କରନ୍ତୁ"
+            >
+              <RotateCcw className={`w-3 h-3 text-amber-700 ${isRefreshing ? 'animate-spin' : ''}`} />
+              <span>Refresh</span>
+            </button>
           </div>
         </div>
 
@@ -619,10 +825,10 @@ export const StudentParticipationScreen: React.FC<StudentParticipationScreenProp
 
         {/* Alert prompt if user taps an option before raising hand */}
         {showRaiseAlert && (
-          <div className="p-3 rounded-2xl bg-rose-50 border-2 border-rose-400 text-rose-900 text-xs font-bold flex items-center gap-2 animate-shake">
+          <div className="p-3.5 rounded-2xl bg-rose-50 border-2 border-rose-500 text-rose-950 text-xs font-bold flex items-center gap-2.5 shadow-md animate-pulse">
             <AlertCircle className="w-5 h-5 text-rose-600 shrink-0" />
             <span>
-              ପ୍ରଥମେ ଉପରୋକ୍ତ "Raise Hand" ବଟନ୍ ଦବାନ୍ତୁ, ତା'ପରେ ହିଁ ବିକଳ୍ପ କ୍ଲିକ୍ ହେବ!
+              ପ୍ରଥମେ ଉପରୋକ୍ତ "RAISE HAND" ବଟନ୍ ଦବାନ୍ତୁ, ତା'ପରେ ହିଁ ବିକଳ୍ପ କ୍ଲିକ୍ ହେବ! (Please tap RAISE HAND button above first to unlock options!)
             </span>
           </div>
         )}
@@ -670,7 +876,7 @@ export const StudentParticipationScreen: React.FC<StudentParticipationScreenProp
                   <button
                     key={optIdx}
                     type="button"
-                    disabled={!hasRaisedHand || hasAnswered}
+                    disabled={hasAnswered}
                     onClick={() => handleOptionClick(opt, optIdx)}
                     className={`p-3.5 rounded-2xl border-2 text-left font-medium transition-all flex items-center justify-between gap-3 select-none ${
                       !hasRaisedHand

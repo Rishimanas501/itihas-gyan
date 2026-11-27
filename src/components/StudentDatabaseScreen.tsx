@@ -41,7 +41,8 @@ import {
   getFilteredStudents,
   filterStudentsWithEnrolments,
   getExpectedSemesterForBatch,
-  SEMESTER_OPTIONS
+  SEMESTER_OPTIONS,
+  STUDENTS_REPLACED_FLAG_KEY
 } from '../services/studentDataService';
 
 interface StudentDatabaseScreenProps {
@@ -99,6 +100,7 @@ export const StudentDatabaseScreen: React.FC<StudentDatabaseScreenProps> = ({ on
   const [importEnrolmentsPreview, setImportEnrolmentsPreview] = useState<Omit<CourseEnrolment, 'id'>[]>([]);
   const [duplicates, setDuplicates] = useState<string[]>([]);
   const [missingRollCount, setMissingRollCount] = useState(0);
+  const [replaceExistingOnImport, setReplaceExistingOnImport] = useState(true);
 
   // Add / Edit Student Form State
   const [formData, setFormData] = useState({
@@ -281,39 +283,92 @@ export const StudentDatabaseScreen: React.FC<StudentDatabaseScreenProps> = ({ on
     }
 
     try {
+      // Deduplicate parsed rows by rollNo so unique index & total count stay exact
+      const uniqueByRoll = new Map<string, Omit<Student, 'id'>>();
+      for (const st of importPreview) {
+        const cleanRoll = st.rollNo.trim();
+        if (!cleanRoll) continue;
+        uniqueByRoll.set(cleanRoll, { ...st, rollNo: cleanRoll });
+      }
+      const studentsToSave = Array.from(uniqueByRoll.values());
+
       let added = 0;
       let updated = 0;
 
-      for (const st of importPreview) {
-        let studentId: number | undefined;
-        const existing = await db.students.where('rollNo').equals(st.rollNo).first();
-        if (existing && existing.id) {
-          await db.students.update(existing.id, {
-            ...st,
-            updatedAt: new Date().toISOString()
-          });
-          studentId = existing.id;
-          updated++;
-        } else {
-          studentId = await db.students.add(st);
-          added++;
+      await db.transaction('rw', db.students, db.enrolments, async () => {
+        if (replaceExistingOnImport) {
+          await db.students.clear();
+          await db.enrolments.clear();
+          if (typeof localStorage !== 'undefined') {
+            localStorage.setItem(STUDENTS_REPLACED_FLAG_KEY, 'true');
+          }
         }
 
-        // Save enrolments
-        if (st.enrolments && st.enrolments.length > 0) {
-          await db.enrolments.where('rollNo').equals(st.rollNo).delete();
-          const toAdd = st.enrolments.map(e => ({
-            ...e,
-            studentId,
-            rollNo: st.rollNo
-          }));
-          await db.enrolments.bulkAdd(toAdd);
-        }
-      }
+        const now = new Date().toISOString();
 
-      alert(`Import Successful! Processed ${added + updated} students (${added} added, ${updated} updated).`);
+        for (const st of studentsToSave) {
+          const { enrolments: studentEnrolments, ...studentFields } = st;
+          let studentId: number;
+
+          const existing = replaceExistingOnImport
+            ? undefined
+            : await db.students.where('rollNo').equals(st.rollNo).first();
+
+          if (existing && existing.id) {
+            await db.students.update(existing.id, {
+              ...studentFields,
+              updatedAt: now
+            });
+            studentId = existing.id;
+            updated++;
+          } else {
+            studentId = await db.students.add({
+              ...studentFields,
+              createdAt: studentFields.createdAt || now,
+              updatedAt: now
+            });
+            added++;
+          }
+
+          if (!replaceExistingOnImport) {
+            await db.enrolments.where('rollNo').equals(st.rollNo).delete();
+          }
+
+          if (studentEnrolments && studentEnrolments.length > 0) {
+            const toAdd = studentEnrolments.map((e) => ({
+              ...e,
+              studentId,
+              rollNo: st.rollNo
+            }));
+            await db.enrolments.bulkAdd(toAdd);
+          } else {
+            const batch = st.batch || '2024-27';
+            const sem = st.semester || 'Semester I';
+            const dept = st.department || 'History';
+            await db.enrolments.add({
+              studentId,
+              rollNo: st.rollNo,
+              courseCategory: 'Major',
+              specificCategory: 'Major (Core-I)',
+              subject: dept,
+              department: dept,
+              semester: sem,
+              batch,
+              academicSession: batch,
+              createdAt: now,
+              updatedAt: now
+            });
+          }
+        }
+      });
+
+      alert(
+        replaceExistingOnImport
+          ? `Import Successful! Old list wiped and replaced with ${added} new students.`
+          : `Import Successful! Processed ${added + updated} students (${added} added, ${updated} updated).`
+      );
       setIsImportModalOpen(false);
-      loadStudents();
+      await loadStudents();
     } catch (err: any) {
       alert('Failed to save students to database: ' + err.message);
     }
@@ -1469,194 +1524,211 @@ export const StudentDatabaseScreen: React.FC<StudentDatabaseScreenProps> = ({ on
       {/* MODAL 3: EXCEL / CSV IMPORT WITH NEP MULTI-ENROLMENT SUPPORT */}
       {/* ========================================================================= */}
       {isImportModalOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl max-w-4xl w-full p-6 shadow-2xl border border-slate-100 max-h-[90vh] flex flex-col space-y-4 animate-in zoom-in-95">
+        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4">
+          <div className="bg-white rounded-3xl max-w-4xl w-full p-4 sm:p-6 shadow-2xl border border-slate-100 max-h-[92dvh] flex flex-col overflow-hidden animate-in zoom-in-95">
+            {/* Fixed Top Header */}
             <div className="flex items-center justify-between pb-3 border-b border-slate-100 shrink-0">
               <div>
-                <h3 className="font-odia font-bold text-xl text-slate-900">
+                <h3 className="font-odia font-bold text-base sm:text-xl text-slate-900">
                   Excel / CSV ଛାତ୍ର ତଥ୍ୟ ଆମଦାନୀ (Student & Course Enrolments Import)
                 </h3>
-                <p className="text-xs text-slate-500">
+                <p className="text-[11px] sm:text-xs text-slate-500">
                   ସ୍ପ୍ରେଡ୍‌ସିଟ୍ ଶୀର୍ଷକଗୁଡ଼ିକ ଏବଂ NEP ବହୁ-ବିଷୟ ପଞ୍ଜୀକରଣ (Major, Minor, MDC, AEC, SEC, VAC) ଯାଞ୍ଚ କରନ୍ତୁ।
                 </p>
               </div>
               <button 
                 onClick={() => setIsImportModalOpen(false)} 
-                className="p-1 rounded-xl hover:bg-slate-100 text-slate-400 hover:text-slate-700 cursor-pointer"
+                className="p-1.5 rounded-xl hover:bg-slate-100 text-slate-400 hover:text-slate-700 cursor-pointer shrink-0"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            {/* Default Batch, Course Type & Department Assignment Strip */}
-            <div className="bg-blue-50/70 p-4 rounded-2xl border border-blue-200/80 grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs shrink-0">
-              <div>
-                <label className="block font-bold text-blue-950 uppercase text-[10px] mb-1">
-                  ଡିଫଲ୍ଟ ବ୍ୟାଚ୍ (Default Batch)
-                </label>
-                <select
-                  value={defaultImportBatch}
-                  onChange={(e) => handleDefaultBatchChange(e.target.value)}
-                  className="w-full p-2 rounded-xl border border-blue-300 bg-white font-bold text-blue-900 focus:outline-none"
-                >
-                  <option value="2024-27">ବ୍ୟାଚ୍ 2024-27 (3rd Year)</option>
-                  <option value="2025-28">ବ୍ୟାଚ୍ 2025-28 (2nd Year)</option>
-                  <option value="2026-29">ବ୍ୟାଚ୍ 2026-29 (1st Year)</option>
-                </select>
+            {/* Scrollable Middle Body (Mobile & Desktop friendly) */}
+            <div className="flex-1 min-h-0 overflow-y-auto py-3 space-y-3 pr-0.5">
+              {/* Default Batch, Course Type & Department Assignment Strip */}
+              <div className="bg-blue-50/70 p-3 sm:p-4 rounded-2xl border border-blue-200/80 grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
+                <div>
+                  <label className="block font-bold text-blue-950 uppercase text-[10px] mb-1">
+                    ଡିଫଲ୍ଟ ବ୍ୟାଚ୍ (Default Batch)
+                  </label>
+                  <select
+                    value={defaultImportBatch}
+                    onChange={(e) => handleDefaultBatchChange(e.target.value)}
+                    className="w-full p-2 rounded-xl border border-blue-300 bg-white font-bold text-blue-900 focus:outline-none"
+                  >
+                    <option value="2024-27">ବ୍ୟାଚ୍ 2024-27 (3rd Year)</option>
+                    <option value="2025-28">ବ୍ୟାଚ୍ 2025-28 (2nd Year)</option>
+                    <option value="2026-29">ବ୍ୟାଚ୍ 2026-29 (1st Year)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block font-bold text-blue-950 uppercase text-[10px] mb-1">
+                    ଡିଫଲ୍ଟ କୋର୍ସ (Default Course Type)
+                  </label>
+                  <select
+                    value={defaultImportCourseType}
+                    onChange={(e) => handleDefaultCourseTypeChange(e.target.value)}
+                    className="w-full p-2 rounded-xl border border-blue-300 bg-white font-bold text-blue-900 focus:outline-none"
+                  >
+                    <option value="Major">Major (ମୁଖ୍ୟ ବିଷୟ / Honours)</option>
+                    <option value="Minor">Minor (ସହାୟକ ବିଷୟ / Elective)</option>
+                    <option value="MDC">MDC / MCB</option>
+                    <option value="AEC">AEC (Ability Enhancement)</option>
+                    <option value="SEC">SEC (Skill Enhancement)</option>
+                    <option value="VAC">VAC (Value Added Course)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block font-bold text-blue-950 uppercase text-[10px] mb-1">
+                    ଡିଫଲ୍ଟ ବିଭାଗ (Default Department)
+                  </label>
+                  <select
+                    value={defaultImportDepartment}
+                    onChange={(e) => handleDefaultDeptChange(e.target.value)}
+                    className="w-full p-2 rounded-xl border border-blue-300 bg-white font-bold text-blue-900 focus:outline-none"
+                  >
+                    {allDepartments.map(d => (
+                      <option key={d} value={d}>{d}</option>
+                    ))}
+                  </select>
+                </div>
               </div>
 
-              <div>
-                <label className="block font-bold text-blue-950 uppercase text-[10px] mb-1">
-                  ଡିଫଲ୍ଟ କୋର୍ସ (Default Course Type)
-                </label>
-                <select
-                  value={defaultImportCourseType}
-                  onChange={(e) => handleDefaultCourseTypeChange(e.target.value)}
-                  className="w-full p-2 rounded-xl border border-blue-300 bg-white font-bold text-blue-900 focus:outline-none"
-                >
-                  <option value="Major">Major (ମୁଖ୍ୟ ବିଷୟ / Honours)</option>
-                  <option value="Minor">Minor (ସହାୟକ ବିଷୟ / Elective)</option>
-                  <option value="MDC">MDC / MCB</option>
-                  <option value="AEC">AEC (Ability Enhancement)</option>
-                  <option value="SEC">SEC (Skill Enhancement)</option>
-                  <option value="VAC">VAC (Value Added Course)</option>
-                </select>
+              {/* Warning alerts if missing or duplicates */}
+              {(duplicates.length > 0 || missingRollCount > 0) && (
+                <div className="space-y-2">
+                  {duplicates.length > 0 && (
+                    <div className="p-3 rounded-2xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-center gap-2">
+                      <AlertTriangle className="w-4 h-4 shrink-0 text-amber-600" />
+                      <span>
+                        ଡୁପ୍ଲିକେଟ୍ ରୋଲ୍ ନମ୍ବର: {duplicates.slice(0, 5).join(', ')} (ସ୍ୱୟଂଚାଳିତ ଭାବେ ଅପଡେଟ୍ ହେବ)।
+                      </span>
+                    </div>
+                  )}
+                  {missingRollCount > 0 && (
+                    <div className="p-3 rounded-2xl bg-rose-50 border border-rose-200 text-rose-900 text-xs flex items-center gap-2">
+                      <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600" />
+                      <span>
+                        {missingRollCount} ଟି ଧାଡ଼ିରେ ରୋଲ୍ ନମ୍ବର ନାହିଁ ଏବଂ ତାହା ବାଦ୍ ଦିଆଯିବ।
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Column Mapping Selectors */}
+              <div className="bg-slate-50 p-3 sm:p-4 rounded-2xl border border-slate-200 grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs">
+                <div>
+                  <label className="block font-bold text-slate-700 uppercase mb-1">Roll No Column *</label>
+                  <select
+                    value={columnMapping.rollNo}
+                    onChange={(e) => handleMappingChange('rollNo', e.target.value)}
+                    className="w-full p-1.5 rounded-lg border border-slate-300 bg-white font-semibold"
+                  >
+                    <option value="">-- Auto / Header --</option>
+                    {importHeaders.map(h => <option key={h} value={h}>{h}</option>)}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block font-bold text-slate-700 uppercase mb-1">Student Name *</label>
+                  <select
+                    value={columnMapping.name}
+                    onChange={(e) => handleMappingChange('name', e.target.value)}
+                    className="w-full p-1.5 rounded-lg border border-slate-300 bg-white font-semibold"
+                  >
+                    <option value="">-- Auto / Header --</option>
+                    {importHeaders.map(h => <option key={h} value={h}>{h}</option>)}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block font-bold text-slate-700 uppercase mb-1">Batch Column</label>
+                  <select
+                    value={columnMapping.batch}
+                    onChange={(e) => handleMappingChange('batch', e.target.value)}
+                    className="w-full p-1.5 rounded-lg border border-slate-300 bg-white font-semibold"
+                  >
+                    <option value="">-- Use Default Batch ({defaultImportBatch}) --</option>
+                    {importHeaders.map(h => <option key={h} value={h}>{h}</option>)}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block font-bold text-slate-700 uppercase mb-1">Major Dept Column</label>
+                  <select
+                    value={columnMapping.department}
+                    onChange={(e) => handleMappingChange('department', e.target.value)}
+                    className="w-full p-1.5 rounded-lg border border-slate-300 bg-white font-semibold"
+                  >
+                    <option value="">-- Use Default Dept ({defaultImportDepartment}) --</option>
+                    {importHeaders.map(h => <option key={h} value={h}>{h}</option>)}
+                  </select>
+                </div>
               </div>
 
-              <div>
-                <label className="block font-bold text-blue-950 uppercase text-[10px] mb-1">
-                  ଡିଫଲ୍ଟ ବିଭାଗ (Default Department)
-                </label>
-                <select
-                  value={defaultImportDepartment}
-                  onChange={(e) => handleDefaultDeptChange(e.target.value)}
-                  className="w-full p-2 rounded-xl border border-blue-300 bg-white font-bold text-blue-900 focus:outline-none"
-                >
-                  {allDepartments.map(d => (
-                    <option key={d} value={d}>{d}</option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            {/* Warning alerts if missing or duplicates */}
-            {(duplicates.length > 0 || missingRollCount > 0) && (
-              <div className="space-y-2 shrink-0">
-                {duplicates.length > 0 && (
-                  <div className="p-3 rounded-2xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-center gap-2">
-                    <AlertTriangle className="w-4 h-4 shrink-0 text-amber-600" />
-                    <span>
-                      ଡୁପ୍ଲିକେଟ୍ ରୋଲ୍ ନମ୍ବର: {duplicates.slice(0, 5).join(', ')} (ସ୍ୱୟଂଚାଳିତ ଭାବେ ଅପଡେଟ୍ ହେବ)।
-                    </span>
-                  </div>
-                )}
-                {missingRollCount > 0 && (
-                  <div className="p-3 rounded-2xl bg-rose-50 border border-rose-200 text-rose-900 text-xs flex items-center gap-2">
-                    <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600" />
-                    <span>
-                      {missingRollCount} ଟି ଧାଡ଼ିରେ ରୋଲ୍ ନମ୍ବର ନାହିଁ ଏବଂ ତାହା ବାଦ୍ ଦିଆଯିବ।
-                    </span>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Column Mapping Selectors */}
-            <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs shrink-0">
-              <div>
-                <label className="block font-bold text-slate-700 uppercase mb-1">Roll No Column *</label>
-                <select
-                  value={columnMapping.rollNo}
-                  onChange={(e) => handleMappingChange('rollNo', e.target.value)}
-                  className="w-full p-1.5 rounded-lg border border-slate-300 bg-white font-semibold"
-                >
-                  <option value="">-- Auto / Header --</option>
-                  {importHeaders.map(h => <option key={h} value={h}>{h}</option>)}
-                </select>
-              </div>
-
-              <div>
-                <label className="block font-bold text-slate-700 uppercase mb-1">Student Name *</label>
-                <select
-                  value={columnMapping.name}
-                  onChange={(e) => handleMappingChange('name', e.target.value)}
-                  className="w-full p-1.5 rounded-lg border border-slate-300 bg-white font-semibold"
-                >
-                  <option value="">-- Auto / Header --</option>
-                  {importHeaders.map(h => <option key={h} value={h}>{h}</option>)}
-                </select>
-              </div>
-
-              <div>
-                <label className="block font-bold text-slate-700 uppercase mb-1">Batch Column</label>
-                <select
-                  value={columnMapping.batch}
-                  onChange={(e) => handleMappingChange('batch', e.target.value)}
-                  className="w-full p-1.5 rounded-lg border border-slate-300 bg-white font-semibold"
-                >
-                  <option value="">-- Use Default Batch ({defaultImportBatch}) --</option>
-                  {importHeaders.map(h => <option key={h} value={h}>{h}</option>)}
-                </select>
-              </div>
-
-              <div>
-                <label className="block font-bold text-slate-700 uppercase mb-1">Major Dept Column</label>
-                <select
-                  value={columnMapping.department}
-                  onChange={(e) => handleMappingChange('department', e.target.value)}
-                  className="w-full p-1.5 rounded-lg border border-slate-300 bg-white font-semibold"
-                >
-                  <option value="">-- Use Default Dept ({defaultImportDepartment}) --</option>
-                  {importHeaders.map(h => <option key={h} value={h}>{h}</option>)}
-                </select>
-              </div>
-            </div>
-
-            {/* Table Preview of Extracted Students */}
-            <div className="flex-1 overflow-y-auto border border-slate-200 rounded-2xl">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-slate-100 text-slate-700 sticky top-0 font-bold uppercase text-[10px]">
-                  <tr>
-                    <th className="px-3 py-2.5">SL</th>
-                    <th className="px-3 py-2.5">Roll No</th>
-                    <th className="px-3 py-2.5">Student Name</th>
-                    <th className="px-3 py-2.5">Major Dept</th>
-                    <th className="px-3 py-2.5">Batch</th>
-                    <th className="px-3 py-2.5">Enrolments Count</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {importPreview.slice(0, 100).map((st, idx) => (
-                    <tr key={idx} className="hover:bg-slate-50">
-                      <td className="px-3 py-2 text-slate-400">{idx + 1}</td>
-                      <td className="px-3 py-2 font-mono font-bold text-blue-900">{st.rollNo}</td>
-                      <td className="px-3 py-2 font-semibold font-odia">{st.name}</td>
-                      <td className="px-3 py-2 text-slate-700 font-semibold">{st.department}</td>
-                      <td className="px-3 py-2 font-bold text-blue-700">{st.batch}</td>
-                      <td className="px-3 py-2 text-slate-600 font-mono">
-                        {(st.enrolments || []).length} Courses
-                      </td>
+              {/* Table Preview of Extracted Students */}
+              <div className="max-h-56 overflow-y-auto overflow-x-auto border border-slate-200 rounded-2xl">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-slate-100 text-slate-700 sticky top-0 font-bold uppercase text-[10px]">
+                    <tr>
+                      <th className="px-3 py-2.5">SL</th>
+                      <th className="px-3 py-2.5">Roll No</th>
+                      <th className="px-3 py-2.5">Student Name</th>
+                      <th className="px-3 py-2.5">Major Dept</th>
+                      <th className="px-3 py-2.5">Batch</th>
+                      <th className="px-3 py-2.5">Enrolments Count</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {importPreview.slice(0, 100).map((st, idx) => (
+                      <tr key={idx} className="hover:bg-slate-50">
+                        <td className="px-3 py-2 text-slate-400">{idx + 1}</td>
+                        <td className="px-3 py-2 font-mono font-bold text-blue-900">{st.rollNo}</td>
+                        <td className="px-3 py-2 font-semibold font-odia">{st.name}</td>
+                        <td className="px-3 py-2 text-slate-700 font-semibold">{st.department}</td>
+                        <td className="px-3 py-2 font-bold text-blue-700">{st.batch}</td>
+                        <td className="px-3 py-2 text-slate-600 font-mono">
+                          {(st.enrolments || []).length} Courses
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Replace Existing List Option */}
+              <label className="flex items-center gap-2.5 p-3 rounded-2xl bg-amber-50 border border-amber-200 text-xs font-bold text-amber-950 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={replaceExistingOnImport}
+                  onChange={(e) => setReplaceExistingOnImport(e.target.checked)}
+                  className="w-4 h-4 rounded text-blue-600 shrink-0"
+                />
+                <span>
+                  ପୁରୁଣା ଛାତ୍ର ତାଲିକା ସମ୍ପୂର୍ଣ୍ଣ ହଟାଇ ନୂଆ ତାଲିକା ସେଭ୍ କରନ୍ତୁ (Wipe old student list &amp; save new Excel data only)
+                </span>
+              </label>
             </div>
 
-            {/* Bottom confirmation buttons */}
-            <div className="pt-3 border-t border-slate-100 flex items-center justify-between shrink-0">
+            {/* Always-Visible Pinned Bottom Confirmation Footer */}
+            <div className="pt-3 border-t border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 shrink-0 bg-white">
               <span className="text-xs text-slate-600 font-bold">
                 ସମୁଦାୟ ଆମଦାନୀ ହେବାକୁ ଥିବା ଛାତ୍ର: <span className="text-blue-700 text-sm">{importPreview.length}</span> ({importEnrolmentsPreview.length} Course Enrolments)
               </span>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 w-full sm:w-auto">
                 <button
                   onClick={() => setIsImportModalOpen(false)}
-                  className="px-4 py-2 rounded-xl border border-slate-200 text-slate-600 text-xs font-bold hover:bg-slate-100 cursor-pointer"
+                  className="flex-1 sm:flex-initial px-4 py-2.5 rounded-xl border border-slate-200 text-slate-600 text-xs font-bold hover:bg-slate-100 cursor-pointer"
                 >
                   ବାତିଲ୍ (Cancel)
                 </button>
                 <button
                   onClick={confirmImport}
-                  className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-black shadow-md active:scale-95 transition-all cursor-pointer"
+                  className="flex-2 sm:flex-initial px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-black shadow-md active:scale-95 transition-all cursor-pointer"
                 >
                   ଆମଦାନୀ ନିଶ୍ଚିତ କରନ୍ତୁ ({importPreview.length} Students)
                 </button>

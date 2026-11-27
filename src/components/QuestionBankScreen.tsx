@@ -53,7 +53,10 @@ import type {
 import { 
   parseAndConvertPastedText,
   checkQuestionDuplicate,
-  normalizeQuestionForComparison 
+  normalizeQuestionForComparison,
+  scanDuplicatesInQuestions,
+  autoSolveAndCompleteHistoryQuestions,
+  type DuplicateScanResult
 } from '../services/aiGenerator';
 import { 
   sendChatMessage,
@@ -160,8 +163,13 @@ export const QuestionBankScreen: React.FC<QuestionBankScreenProps> = ({
   const [smartPasteStep, setSmartPasteStep] = useState<'paste' | 'preview'>('paste');
   const [smartPasteRawText, setSmartPasteRawText] = useState('');
   const [parsedPastedQuestions, setParsedPastedQuestions] = useState<ParsedQuestionItem[]>([]);
-  const [smartPasteSkipDuplicates, setSmartPasteSkipDuplicates] = useState(true);
+  const [smartPasteSkipDuplicates, setSmartPasteSkipDuplicates] = useState(false);
   const [pasteError, setPasteError] = useState<string | null>(null);
+  const [isConvertingWithAi, setIsConvertingWithAi] = useState(false);
+
+  // Smart Paste Requirements
+  const [smartPasteTargetPattern, setSmartPasteTargetPattern] = useState<'auto' | 'mcq' | 'blanks' | 'true_false' | 'short' | 'long'>('auto');
+  const [smartPasteTargetLanguage, setSmartPasteTargetLanguage] = useState<'bilingual' | 'odia' | 'english'>('bilingual');
 
   // Chapter AI Generator Modal States
   const [isChapterAiModalOpen, setIsChapterAiModalOpen] = useState(false);
@@ -205,6 +213,11 @@ export const QuestionBankScreen: React.FC<QuestionBankScreenProps> = ({
 
   const [deleteConfirmPaper, setDeleteConfirmPaper] = useState<PaperWithStats | null>(null);
   const [deleteConfirmChapter, setDeleteConfirmChapter] = useState<ChapterWithStats | null>(null);
+
+  // Duplicate Scanner Modal States
+  const [isDuplicateScannerOpen, setIsDuplicateScannerOpen] = useState(false);
+  const [duplicateScanResults, setDuplicateScanResults] = useState<DuplicateScanResult<Question>[]>([]);
+  const [isScanningDuplicates, setIsScanningDuplicates] = useState(false);
 
   // Preview Modals
   const [previewQuestionIndex, setPreviewQuestionIndex] = useState<number | null>(null);
@@ -466,11 +479,56 @@ export const QuestionBankScreen: React.FC<QuestionBankScreenProps> = ({
     }
   };
 
+  // Duplicate Scanner Handlers
+  const handleOpenDuplicateScanner = () => {
+    setIsScanningDuplicates(true);
+    const results = scanDuplicatesInQuestions(questions);
+    setDuplicateScanResults(results);
+    setIsScanningDuplicates(false);
+    setIsDuplicateScannerOpen(true);
+  };
+
+  const handleDeleteDuplicateFromScan = async (id?: number) => {
+    if (!id) return;
+    if (confirm('ଏହି ଡୁପ୍ଲିକେଟ୍ ପ୍ରଶ୍ନଟିକୁ ଡିଲିଟ୍ କରିବାକୁ ଚାହୁଁଛନ୍ତି କି? (Are you sure you want to delete this duplicate question?)')) {
+      await db.questions.delete(id);
+      if (selectedChapter) {
+        const updated = await getChapterQuestions(selectedChapter.id);
+        setQuestions(updated);
+        const newResults = scanDuplicatesInQuestions(updated);
+        setDuplicateScanResults(newResults);
+        showToast('✅ ଡୁପ୍ଲିକେଟ୍ ପ୍ରଶ୍ନ ସଫଳତାର ସହ ହଟାଗଲା।');
+      }
+    }
+  };
+
   // Smart Paste Handlers
   const handleOpenSmartPaste = () => {
     setSmartPasteStep('paste');
     setPasteError(null);
     setIsSmartPasteModalOpen(true);
+  };
+
+  const applyParsedQuestions = (parsedList: Question[]) => {
+    const itemsWithDupCheck: ParsedQuestionItem[] = parsedList.map((q) => {
+      const dup = checkQuestionDuplicate(q.question, questions);
+      return {
+        ...q,
+        isDuplicate: dup.isDuplicate,
+        skipThis: dup.isDuplicate, // initially mark duplicate as skipped, teacher can click to keep!
+        matchedQuestion: dup.matchedQuestion
+      };
+    });
+
+    setParsedPastedQuestions(itemsWithDupCheck);
+    setSmartPasteStep('preview');
+  };
+
+  const handleToggleSkipAllDuplicates = (skip: boolean) => {
+    setSmartPasteSkipDuplicates(skip);
+    setParsedPastedQuestions((prev) =>
+      prev.map((q) => (q.isDuplicate ? { ...q, skipThis: skip } : q))
+    );
   };
 
   const handleConvertPastedText = () => {
@@ -485,41 +543,167 @@ export const QuestionBankScreen: React.FC<QuestionBankScreenProps> = ({
       subject: selectedPaper?.subject || selectedPaper?.name,
       paper: selectedPaper?.name,
       topic: selectedChapter?.name,
-      language: 'bilingual'
+      language: smartPasteTargetLanguage === 'odia' ? 'odia' : smartPasteTargetLanguage === 'english' ? 'english' : 'bilingual'
     });
 
     if (parsed.length === 0) {
-      setPasteError('କୌଣସି ପ୍ରଶ୍ନ ଚିହ୍ନଟ ହୋଇପାରିଲା ନାହିଁ। ଦୟାକରି ନମୁନା ଫର୍ମାଟ୍ ଅନୁସାରେ (1. Question..., (A)... (B)... Ans:...) ଲେଖନ୍ତୁ କିମ୍ବା "ନମୁନା ଟେମ୍ପଲେଟ୍" ବଟନ୍ ବ୍ୟବହାର କରନ୍ତୁ।');
+      setPasteError('ସିଧାସଳଖ ପାଠ୍ୟରେ ସଠିକ୍ ପ୍ରଶ୍ନ ଫର୍ମାଟ୍ ମିଳିଲା ନାହିଁ। ଦୟାକରି ତଳେ ଥିବା "✨ AI ବିଶ୍ଳେଷଣ ଓ ରୂପାନ୍ତରଣ (AI Smart Convert)" ବଟନ୍ ଦବାନ୍ତୁ, AI ନିଜେ ଏହାକୁ ପ୍ରଶ୍ନରେ ରୂପାନ୍ତରିତ କରିବ।');
       return;
     }
 
-    // Check each question against existing chapter questions for duplicates
-    const itemsWithDupCheck: ParsedQuestionItem[] = parsed.map((q) => {
-      const dup = checkQuestionDuplicate(q.question, questions);
-      return {
-        ...q,
-        isDuplicate: dup.isDuplicate,
-        skipThis: dup.isDuplicate, // default skip if already exists
-        matchedQuestion: dup.matchedQuestion
-      };
+    applyParsedQuestions(parsed);
+  };
+
+  const handleConvertPastedTextWithAi = async () => {
+    if (!smartPasteRawText.trim()) {
+      setPasteError('ଦୟାକରି କିଛି ପ୍ରଶ୍ନ, ଉତ୍ତର କିମ୍ବା ତଥ୍ୟ ପେଷ୍ଟ୍ କରନ୍ତୁ।');
+      return;
+    }
+    if (!selectedChapter || !selectedPaper) return;
+
+    setIsConvertingWithAi(true);
+    setPasteError(null);
+
+    // 1. First parse the user's input directly
+    const directQuestions = parseAndConvertPastedText(smartPasteRawText, {
+      paperId: selectedPaper.id,
+      chapterId: selectedChapter.id,
+      subject: selectedPaper.subject || selectedPaper.name,
+      paper: selectedPaper.name,
+      topic: selectedChapter.name,
+      language: smartPasteTargetLanguage === 'odia' ? 'odia' : smartPasteTargetLanguage === 'english' ? 'english' : 'bilingual'
     });
 
-    setParsedPastedQuestions(itemsWithDupCheck);
-    setSmartPasteStep('preview');
+    // If teacher pasted specific questions (like 5 blanks or incomplete questions)
+    if (directQuestions.length > 0) {
+      // Auto-solve them using our historical knowledge engine
+      const solved = autoSolveAndCompleteHistoryQuestions(
+        directQuestions,
+        smartPasteTargetPattern,
+        smartPasteTargetLanguage
+      );
+      applyParsedQuestions(solved);
+      setIsConvertingWithAi(false);
+      return;
+    }
+
+    // 2. If no numbered questions were found, generate questions from raw text
+    const chapName = selectedChapter.nameOdia || selectedChapter.name;
+    const paperName = selectedPaper.nameOdia || selectedPaper.name;
+
+    let patternInstruction = '';
+    if (smartPasteTargetPattern === 'mcq') {
+      patternInstruction = 'Convert the provided content into Multiple Choice Questions (MCQs). Every question MUST have 4 options labelled (A), (B), (C), (D), with correct answer and brief historical explanation.';
+    } else if (smartPasteTargetPattern === 'blanks') {
+      patternInstruction = 'Convert the provided content into Fill-in-the-Blanks questions with ___ blank, followed by Ans: and Exp:.';
+    } else if (smartPasteTargetPattern === 'true_false') {
+      patternInstruction = 'Convert the provided content into True or False questions, followed by Ans: True or False and Exp:.';
+    } else if (smartPasteTargetPattern === 'short') {
+      patternInstruction = 'Convert the provided content into 2-mark short questions with concise accurate answer and explanation.';
+    } else if (smartPasteTargetPattern === 'long') {
+      patternInstruction = 'Convert the provided content into 5-mark comprehensive questions with detailed model answer.';
+    } else {
+      patternInstruction = 'Analyze the input text carefully. If only answers or keywords are given, create the corresponding questions. If questions already exist, structure them with full options and answers in standard MCQ or appropriate format.';
+    }
+
+    const langInstruction = smartPasteTargetLanguage === 'odia'
+      ? 'Generate output strictly in Odia language.'
+      : smartPasteTargetLanguage === 'english'
+      ? 'Generate output in English language.'
+      : 'Generate output in Bilingual format (Odia question followed by English translation).';
+
+    const aiPrompt = `You are an expert History Professor for College Examination in Odisha.
+Subject/Paper: "${paperName}"
+Chapter: "${chapName}"
+
+TEACHER INPUT (May contain rough questions, only answers, key terms, or study notes):
+"""
+${smartPasteRawText.trim()}
+"""
+
+INSTRUCTIONS:
+1. ${patternInstruction}
+2. ${langInstruction}
+3. Format each question strictly in standard format:
+1. [Question Text]
+(A) [Option A]
+(B) [Option B]
+(C) [Option C]
+(D) [Option D]
+Ans: [Correct Option or Answer]
+Exp: [Brief historical explanation]
+
+Return only the formatted questions.`;
+
+    try {
+      const res = await sendChatMessage({
+        conversationId: 'smart_ai_paste_' + selectedChapter.id + '_' + Date.now(),
+        messages: [],
+        currentInput: aiPrompt,
+        provider: (appSettings?.defaultAiProvider as any) || 'existing',
+        model: (appSettings?.defaultAiModel as any) || 'existing-history-nlp',
+        geminiApiKey: appSettings?.geminiApiKey,
+        openaiApiKey: appSettings?.openaiApiKey,
+        historyEra: 'all',
+        examFormat: smartPasteTargetPattern === 'mcq' ? 'mcqs' : smartPasteTargetPattern === 'short' ? '2-mark' : '1-mark',
+        targetLanguage: smartPasteTargetLanguage === 'odia' ? 'odia' : smartPasteTargetLanguage === 'english' ? 'english' : 'bilingual',
+        existingQuestionsToAvoid: questions.map(q => q.question).filter(Boolean)
+      });
+
+      const parsed = parseAndConvertPastedText(res, {
+        paperId: selectedPaper.id,
+        chapterId: selectedChapter.id,
+        subject: selectedPaper.subject || selectedPaper.name,
+        paper: selectedPaper.name,
+        topic: selectedChapter.name,
+        language: smartPasteTargetLanguage === 'odia' ? 'odia' : smartPasteTargetLanguage === 'english' ? 'english' : 'bilingual'
+      });
+
+      if (parsed.length > 0) {
+        applyParsedQuestions(parsed);
+      } else {
+        const directParsed = parseAndConvertPastedText(smartPasteRawText, {
+          paperId: selectedPaper.id,
+          chapterId: selectedChapter.id,
+          subject: selectedPaper.subject || selectedPaper.name,
+          paper: selectedPaper.name,
+          topic: selectedChapter.name,
+          language: 'bilingual'
+        });
+        if (directParsed.length > 0) {
+          applyParsedQuestions(directParsed);
+        } else {
+          setPasteError('AI ପ୍ରଶ୍ନ ଚିହ୍ନଟ କରିପାରିଲା ନାହିଁ। ଦୟାକରି ପାଠ୍ୟ ଯାଞ୍ଚ କରି ପୁନର୍ବାର ଚେଷ୍ଟା କରନ୍ତୁ।');
+        }
+      }
+    } catch (e: any) {
+      console.error('Error in AI paste conversion:', e);
+      const directParsed = parseAndConvertPastedText(smartPasteRawText, {
+        paperId: selectedPaper.id,
+        chapterId: selectedChapter.id,
+        subject: selectedPaper.subject || selectedPaper.name,
+        paper: selectedPaper.name,
+        topic: selectedChapter.name,
+        language: 'bilingual'
+      });
+      if (directParsed.length > 0) {
+        applyParsedQuestions(directParsed);
+      } else {
+        setPasteError('AI ରୂପାନ୍ତରଣରେ ତ୍ରୁଟି: ' + (e.message || 'ଦୟାକରି ଇଣ୍ଟରନେଟ୍ ବା AI ସେଟିଙ୍ଗ୍ ଯାଞ୍ଚ କରନ୍ତୁ।'));
+      }
+    } finally {
+      setIsConvertingWithAi(false);
+    }
   };
 
   const handleSaveParsedQuestionsToChapter = async () => {
     if (!selectedPaper || !selectedChapter || parsedPastedQuestions.length === 0) return;
     
-    // Filter questions based on skipDuplicates and skipThis
-    const questionsToSave = parsedPastedQuestions.filter((q) => {
-      if (smartPasteSkipDuplicates && q.isDuplicate) return false;
-      if (q.skipThis) return false;
-      return true;
-    });
+    // Save only questions that are not skipped by the teacher
+    const questionsToSave = parsedPastedQuestions.filter((q) => !q.skipThis);
 
     if (questionsToSave.length === 0) {
-      alert('ସଂରକ୍ଷଣ କରିବା ପାଇଁ କୌଣସି ନୂଆ ପ୍ରଶ୍ନ ନାହିଁ (ସମସ୍ତ ପ୍ରଶ୍ନ ପୂର୍ବରୁ Question Bank ରେ ଉପଲବ୍ଧ ଅଛି କିମ୍ବା ବାଦ୍ ଦିଆଯାଇଛି)।');
+      alert('ସଂରକ୍ଷଣ କରିବା ପାଇଁ ଅତି କମରେ ଗୋଟିଏ ପ୍ରଶ୍ନ "ସଂରକ୍ଷଣ ହେବ (Keep)" ଭାବେ ଚୟନ କରନ୍ତୁ।');
       return;
     }
 
@@ -545,10 +729,10 @@ export const QuestionBankScreen: React.FC<QuestionBankScreenProps> = ({
       setIsSmartPasteModalOpen(false);
       setSmartPasteRawText('');
       setParsedPastedQuestions([]);
-      showToast(`✅ ସଫଳତାର ସହ ${questionsToSave.length} ଟି ନୂଆ ପ୍ରଶ୍ନ "${selectedChapter.nameOdia || selectedChapter.name}" ରେ ସଂରକ୍ଷିତ ହେଲା!${skippedCount > 0 ? ` (${skippedCount} ଟି Duplicate ବାଦ୍ ଦିଆଗଲା)` : ''}`);
+      showToast(`✅ ସଫଳତାର ସହ ${questionsToSave.length} ଟି ପ୍ରଶ୍ନ "${selectedChapter.nameOdia || selectedChapter.name}" ରେ ସଂରକ୍ଷିତ ହେଲା!${skippedCount > 0 ? ` (${skippedCount} ଟି ବାଦ୍ ଦିଆଗଲା)` : ''}`);
     } catch (e) {
       console.error('Error saving parsed questions:', e);
-      setPasteError('ପ୍ରଶ୍ନ ସେଭ୍ କରିବାରେ ତ୍ରୁଟି ଘଟିଲା।');
+      alert('ପ୍ରଶ୍ନ ସଂରକ୍ଷଣ କରିବାରେ ତ୍ରୁଟି ଘଟିଲା।');
     }
   };
 
@@ -1568,6 +1752,15 @@ export const QuestionBankScreen: React.FC<QuestionBankScreenProps> = ({
                 </button>
 
                 <button
+                  onClick={handleOpenDuplicateScanner}
+                  className="px-3.5 py-2.5 rounded-2xl bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 text-emerald-800 font-bold text-xs transition-colors cursor-pointer flex items-center gap-1.5 shadow-2xs active:scale-95"
+                  title="ଏହି ଅଧ୍ୟାୟର ସମସ୍ତ ପ୍ରଶ୍ନ ମଧ୍ୟରେ ଡୁପ୍ଲିକେଟ୍ ଯାଞ୍ଚ କରନ୍ତୁ"
+                >
+                  <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                  <span>🔍 ଡୁପ୍ଲିକେଟ୍ ଯାଞ୍ଚ ({questions.length})</span>
+                </button>
+
+                <button
                   onClick={() => {
                     setEditingQuestion({
                       paperId: selectedPaper.id,
@@ -1693,6 +1886,14 @@ export const QuestionBankScreen: React.FC<QuestionBankScreenProps> = ({
                 </h2>
 
                 <div className="flex items-center gap-2">
+                  <button
+                    onClick={handleOpenDuplicateScanner}
+                    className="px-3 py-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 text-emerald-800 font-bold text-xs flex items-center gap-1.5 cursor-pointer transition-colors shadow-2xs"
+                    title="ଡୁପ୍ଲିକେଟ୍ ଯାଞ୍ଚ କରନ୍ତୁ"
+                  >
+                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>ଡୁପ୍ଲିକେଟ୍ ଯାଞ୍ଚ</span>
+                  </button>
                   <button
                     onClick={handleOpenSmartPaste}
                     className="px-3 py-1.5 rounded-xl bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-900 font-bold text-xs flex items-center gap-1.5 cursor-pointer transition-colors"
@@ -2654,21 +2855,69 @@ export const QuestionBankScreen: React.FC<QuestionBankScreenProps> = ({
                     </div>
                   </div>
 
-                  {/* Textarea */}
-                  <textarea
-                    rows={12}
-                    value={smartPasteRawText}
-                    onChange={(e) => setSmartPasteRawText(e.target.value)}
-                    placeholder={`ଉଦାହରଣ ସ୍ୱରୂପ:
+                    {/* Textarea */}
+                    <textarea
+                      rows={10}
+                      value={smartPasteRawText}
+                      onChange={(e) => setSmartPasteRawText(e.target.value)}
+                      placeholder={`ଏଠାରେ ଆପଣ ଯେକୌଣସି ପାଠ୍ୟ ପେଷ୍ଟ କରନ୍ତୁ — ପ୍ରଶ୍ନ, କେବଳ ଉତ୍ତର, କିମ୍ବା ପଢ଼ା ତଥ୍ୟ...
+
+ଉଦାହରଣ ୧ (କେବଳ ଉତ୍ତର ବା ତଥ୍ୟ):
+- ମାଦଳା ପାଞ୍ଜି (ଓଡ଼ିଶାର ଶ୍ରୀଜଗନ୍ନାଥ ମନ୍ଦିର ଓ ରାଜବଂଶ ଇତିହାସ)
+- ହାତୀଗୁମ୍ଫା ଶିଳାଲେଖ (ଖାରବେଳଙ୍କ ୧୩ ବର୍ଷର କାର୍ଯ୍ୟାବଳୀ)
+
+ଉଦାହରଣ ୨ (ପୂର୍ଣ୍ଣ ପ୍ରଶ୍ନ):
 1. ପ୍ରାଚୀନ ଭାରତୀୟ ଇତିହାସର ସର୍ବପ୍ରାଚୀନ ଧାର୍ମିକ ସାହିତ୍ୟ କେଉଁଟି?
-(A) ଋଗ୍‌ବେଦ
-(B) ସାମବେଦ
-(C) ଯଜୁର୍ବେଦ
-(D) ଅଥର୍ବବେଦ
-ଉତ୍ତର: A
-ବ୍ୟାଖ୍ୟା: ଋଗ୍‌ବେଦ ହେଉଛି ଭାରତର ସର୍ବପୁରାତନ ବୈଦିକ ଗ୍ରନ୍ଥ...`}
-                    className="w-full p-4 rounded-2xl bg-slate-50 border border-slate-200 font-mono text-xs text-slate-800 leading-relaxed focus:outline-none focus:border-amber-500 focus:bg-white transition-all shadow-inner"
-                  />
+(A) ଋଗ୍‌ବେଦ (B) ସାମବେଦ (C) ଯଜୁର୍ବେଦ (D) ଅଥର୍ବବେଦ
+Ans: A
+Exp: ଋଗ୍‌ବେଦ ହେଉଛି ଭାରତର ସର୍ବପୁରାତନ ବୈଦିକ ଗ୍ରନ୍ଥ...`}
+                      className="w-full p-4 rounded-2xl bg-slate-50 border border-slate-200 font-mono text-xs text-slate-800 leading-relaxed focus:outline-none focus:border-amber-500 focus:bg-white transition-all shadow-inner"
+                    />
+
+                    {/* Requirements Card: Format & Language */}
+                    <div className="p-4 rounded-2xl bg-gradient-to-r from-purple-50/70 via-indigo-50/50 to-slate-50 border border-purple-100 space-y-3">
+                      <div className="flex items-center gap-1.5 font-bold text-xs text-purple-950">
+                        <Sparkles className="w-4 h-4 text-purple-600" />
+                        <span>ଆପଣଙ୍କ ଆବଶ୍ୟକତା (Select Your Requirements):</span>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        {/* Target Question Pattern */}
+                        <div>
+                          <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                            ପ୍ରଶ୍ନ ଫର୍ମାଟ୍ (Target Question Pattern):
+                          </label>
+                          <select
+                            value={smartPasteTargetPattern}
+                            onChange={(e) => setSmartPasteTargetPattern(e.target.value as any)}
+                            className="w-full px-3 py-2 rounded-xl bg-white border border-purple-200 font-bold text-xs text-purple-950 focus:outline-none focus:border-purple-400"
+                          >
+                            <option value="auto">ସ୍ୱୟଂକ୍ରିୟ ଚିହ୍ନଟ (Auto Detect from Text)</option>
+                            <option value="mcq">ବହୁବିକଳ୍ପ (MCQ - 4 Options with Ans & Exp)</option>
+                            <option value="blanks">ଶୂନ୍ୟସ୍ଥାନ ପୂରଣ (Fill in the Blanks)</option>
+                            <option value="true_false">ସତ୍ୟ କିମ୍ବା ମିଥ୍ୟା (True / False)</option>
+                            <option value="short">ସଂକ୍ଷିପ୍ତ ଉତ୍ତର (Short Answer - 2 Marks)</option>
+                            <option value="long">ଦୀର୍ଘ ଉତ୍ତର (Long Answer - 5 Marks)</option>
+                          </select>
+                        </div>
+
+                        {/* Target Language */}
+                        <div>
+                          <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                            ଭାଷା (Language):
+                          </label>
+                          <select
+                            value={smartPasteTargetLanguage}
+                            onChange={(e) => setSmartPasteTargetLanguage(e.target.value as any)}
+                            className="w-full px-3 py-2 rounded-xl bg-white border border-purple-200 font-bold text-xs text-purple-950 focus:outline-none focus:border-purple-400"
+                          >
+                            <option value="bilingual">ଓଡ଼ିଆ + English (Bilingual)</option>
+                            <option value="odia">କେବଳ ଓଡ଼ିଆ (Odia Only)</option>
+                            <option value="english">English Only</option>
+                          </select>
+                        </div>
+                      </div>
+                    </div>
 
                   {/* Error Notification */}
                   {pasteError && (
@@ -2703,47 +2952,59 @@ export const QuestionBankScreen: React.FC<QuestionBankScreenProps> = ({
 
                   {/* Duplicate Alert Banner */}
                   {parsedPastedQuestions.some((q) => q.isDuplicate) && (
-                    <div className="p-3.5 rounded-2xl bg-amber-50/90 border border-amber-300 text-amber-950 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
+                    <div className="p-4 rounded-2xl bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-300 text-amber-950 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
                       <div className="flex items-start gap-2.5">
                         <ShieldCheck className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
                         <div>
                           <div className="font-bold text-xs text-amber-900">
-                            ⚠️ {parsedPastedQuestions.filter((q) => q.isDuplicate).length} ଟି ପ୍ରଶ୍ନ ପୂର୍ବରୁ Question Bank ରେ ଉପଲବ୍ଧ ଅଛି (Already in Question Bank)
+                            ⚠️ {parsedPastedQuestions.filter((q) => q.isDuplicate).length} ଟି ପ୍ରଶ୍ନ ପୂର୍ବରୁ Question Bank ରେ ଉପଲବ୍ଧ ଅଛି (Duplicates Found)
                           </div>
-                          <div className="text-[11px] text-amber-800">
-                            ନକଲ ରୋକିବା ପାଇଁ ସେଗୁଡ଼ିକୁ ସ୍ୱୟଂକ୍ରିୟ ବାଦ୍ ଦିଆଯାଇପାରିବ କିମ୍ବା ଇଚ୍ଛା ଅନୁସାରେ ସେଭ୍ କରିପାରିବେ।
+                          <div className="text-[11px] text-amber-800 mt-0.5">
+                            ଆପଣ ଏଗୁଡ଼ିକୁ ରଖିବାକୁ ଚାହାଁନ୍ତି କି ବାଦ୍ ଦେବାକୁ ଚାହାଁନ୍ତି, ତଳୁ ଚୟନ କରନ୍ତୁ:
                           </div>
                         </div>
                       </div>
-                      <label className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-white border border-amber-300 cursor-pointer text-xs font-bold text-amber-900 select-none shrink-0 shadow-2xs hover:bg-amber-100/50">
-                        <input
-                          type="checkbox"
-                          checked={smartPasteSkipDuplicates}
-                          onChange={(e) => setSmartPasteSkipDuplicates(e.target.checked)}
-                          className="w-4 h-4 text-amber-600 rounded cursor-pointer"
-                        />
-                        <span>ଡୁପ୍ଲିକେଟ୍ ବାଦ୍ ଦିଅନ୍ତୁ (Skip Duplicates)</span>
-                      </label>
+
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleToggleSkipAllDuplicates(false)}
+                          className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[11px] shadow-xs cursor-pointer transition-colors"
+                          title="ସମସ୍ତ ପ୍ରଶ୍ନ ରଖନ୍ତୁ"
+                        >
+                          ✅ ସବୁ ରଖନ୍ତୁ (Keep All)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleToggleSkipAllDuplicates(true)}
+                          className="px-3 py-1.5 rounded-xl bg-white hover:bg-amber-100 border border-amber-300 text-amber-900 font-bold text-[11px] shadow-xs cursor-pointer transition-colors"
+                          title="ଡୁପ୍ଲିକେଟ୍ ପ୍ରଶ୍ନଗୁଡ଼ିକୁ ବାଦ୍ ଦିଅନ୍ତୁ"
+                        >
+                          🚫 ସବୁ ବାଦ୍ ଦିଅନ୍ତୁ (Skip All)
+                        </button>
+                      </div>
                     </div>
                   )}
 
                   {/* Questions List */}
                   <div className="space-y-4">
                     {parsedPastedQuestions.map((q, idx) => {
-                      const isSkipped = (smartPasteSkipDuplicates && q.isDuplicate) || q.skipThis;
+                      const isSkipped = !!q.skipThis;
                       return (
                         <div
                           key={idx}
                           className={`p-4 sm:p-5 rounded-2xl shadow-2xs space-y-3 transition-all ${
                             q.isDuplicate
                               ? isSkipped
-                                ? 'bg-amber-50/40 border border-amber-300 opacity-75'
-                                : 'bg-amber-50/70 border-2 border-amber-400'
-                              : 'bg-slate-50 border border-slate-200/90'
+                                ? 'bg-amber-50/30 border border-amber-200 opacity-60'
+                                : 'bg-amber-50/70 border-2 border-amber-400 ring-2 ring-amber-200'
+                              : isSkipped
+                              ? 'bg-slate-50 border border-slate-200 opacity-60'
+                              : 'bg-white border border-slate-200/90'
                           }`}
                         >
                           <div className="flex items-center justify-between gap-2 flex-wrap">
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-2 flex-wrap">
                               <span className="w-6 h-6 rounded-full bg-amber-500 text-white font-bold text-xs flex items-center justify-center">
                                 {idx + 1}
                               </span>
@@ -2790,16 +3051,28 @@ export const QuestionBankScreen: React.FC<QuestionBankScreenProps> = ({
                             </div>
 
                             <div className="flex items-center gap-2">
-                              {/* Individual Skip Checkbox */}
-                              <label className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white border border-slate-200 text-[11px] font-bold text-slate-700 cursor-pointer hover:bg-slate-50 select-none">
-                                <input
-                                  type="checkbox"
-                                  checked={!!q.skipThis}
-                                  onChange={(e) => handleUpdateParsedQuestion(idx, { ...q, skipThis: e.target.checked })}
-                                  className="rounded text-amber-600 cursor-pointer"
-                                />
-                                <span>ବାଦ୍ ଦିଅନ୍ତୁ (Skip)</span>
-                              </label>
+                              {/* Keep / Skip Toggle Button */}
+                              {isSkipped ? (
+                                <button
+                                  type="button"
+                                  onClick={() => handleUpdateParsedQuestion(idx, { ...q, skipThis: false })}
+                                  className="px-2.5 py-1 rounded-xl bg-amber-100 hover:bg-amber-200 border border-amber-300 text-amber-900 text-[11px] font-bold flex items-center gap-1 cursor-pointer transition-colors shadow-2xs"
+                                  title="ଏହି ପ୍ରଶ୍ନଟି ବାଦ୍ ଦିଆଯାଇଛି। ସଂରକ୍ଷଣ କରିବାକୁ ଏଠାରେ କ୍ଲିକ୍ କରନ୍ତୁ"
+                                >
+                                  <Square className="w-3.5 h-3.5 text-amber-700" />
+                                  <span>ବାଦ୍ (କ୍ଲିକ୍ କରି ରଖନ୍ତୁ)</span>
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => handleUpdateParsedQuestion(idx, { ...q, skipThis: true })}
+                                  className="px-2.5 py-1 rounded-xl bg-emerald-100 hover:bg-emerald-200 border border-emerald-300 text-emerald-900 text-[11px] font-bold flex items-center gap-1 cursor-pointer transition-colors shadow-2xs"
+                                  title="ଏହି ପ୍ରଶ୍ନ ସଂରକ୍ଷଣ ହେବ। ବାଦ୍ ଦେବାକୁ ଏଠାରେ କ୍ଲିକ୍ କରନ୍ତୁ"
+                                >
+                                  <CheckSquare className="w-3.5 h-3.5 text-emerald-700" />
+                                  <span>ରଖନ୍ତୁ (Will Save)</span>
+                                </button>
+                              )}
 
                               <button
                                 type="button"
@@ -2811,6 +3084,13 @@ export const QuestionBankScreen: React.FC<QuestionBankScreenProps> = ({
                               </button>
                             </div>
                           </div>
+
+                          {/* Matched Question Note if Duplicate */}
+                          {q.isDuplicate && q.matchedQuestion && (
+                            <div className="text-[11px] text-amber-900 bg-amber-100/60 p-2.5 rounded-xl border border-amber-200 font-odia leading-relaxed">
+                              <strong>ପୂର୍ବରୁ ଥିବା ପ୍ରଶ୍ନ ସହ ସାମଞ୍ଜସ୍ୟ:</strong> "{q.matchedQuestion}"
+                            </div>
+                          )}
 
                           {/* Question Text */}
                           <div>
@@ -2939,25 +3219,60 @@ export const QuestionBankScreen: React.FC<QuestionBankScreenProps> = ({
               </button>
 
               {smartPasteStep === 'paste' ? (
-                <button
-                  type="button"
-                  onClick={handleConvertPastedText}
-                  className="px-6 py-2.5 rounded-2xl bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs uppercase tracking-wider shadow-md hover:shadow-lg transition-all flex items-center gap-2 cursor-pointer active:scale-95"
-                >
-                  <Wand2 className="w-4 h-4" />
-                  <span>ପରିବର୍ତ୍ତନ ଓ ଯାଞ୍ଚ କରନ୍ତୁ (Convert & Preview) &rarr;</span>
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleConvertPastedText}
+                    disabled={isConvertingWithAi || !smartPasteRawText.trim()}
+                    className="px-4 py-2.5 rounded-2xl bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 font-bold text-xs transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                    title="Pre-formatted questions (1. Q, A, B, C, D) ଥିଲେ ସିଧାସଳଖ ପଢ଼ନ୍ତୁ"
+                  >
+                    <Wand2 className="w-3.5 h-3.5 text-slate-500" />
+                    <span>⚡ ସିଧାସଳଖ ପଢ଼ନ୍ତୁ (Direct Fast)</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleConvertPastedTextWithAi}
+                    disabled={isConvertingWithAi || !smartPasteRawText.trim()}
+                    className="px-6 py-2.5 rounded-2xl bg-gradient-to-r from-purple-600 via-indigo-600 to-purple-700 hover:from-purple-700 hover:to-indigo-700 text-white font-bold text-xs uppercase tracking-wider shadow-md hover:shadow-lg transition-all flex items-center gap-2 cursor-pointer active:scale-95 disabled:opacity-50"
+                  >
+                    {isConvertingWithAi ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 animate-spin text-purple-200" />
+                        <span>AI ବିଶ୍ଳେଷଣ ଚାଲିଛି...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="w-4 h-4 text-amber-300" />
+                        <span>✨ AI ବିଶ୍ଳେଷଣ ଓ ରୂପାନ୍ତରଣ &rarr;</span>
+                      </>
+                    )}
+                  </button>
+                </div>
               ) : (
-                <button
-                  type="button"
-                  onClick={handleSaveParsedQuestionsToChapter}
-                  className="px-6 py-2.5 rounded-2xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs uppercase tracking-wider shadow-md hover:shadow-lg transition-all flex items-center gap-2 cursor-pointer active:scale-95"
-                >
-                  <Check className="w-4 h-4" />
-                  <span>
-                    ଏହି ଅଧ୍ୟାୟରେ ସଂରକ୍ଷଣ କରନ୍ତୁ ({parsedPastedQuestions.filter((q) => !(smartPasteSkipDuplicates && q.isDuplicate) && !q.skipThis).length} Questions)
-                  </span>
-                </button>
+                (() => {
+                  const activeCount = parsedPastedQuestions.filter((q) => !q.skipThis).length;
+                  return (
+                    <button
+                      type="button"
+                      disabled={activeCount === 0}
+                      onClick={handleSaveParsedQuestionsToChapter}
+                      className={`px-6 py-2.5 rounded-2xl font-bold text-xs uppercase tracking-wider shadow-md transition-all flex items-center gap-2 ${
+                        activeCount > 0
+                          ? 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer active:scale-95 shadow-emerald-600/20'
+                          : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                      }`}
+                    >
+                      <Check className="w-4 h-4" />
+                      <span>
+                        {activeCount > 0
+                          ? `ଏହି ଅଧ୍ୟାୟରେ ସଂରକ୍ଷଣ କରନ୍ତୁ (${activeCount} Questions)`
+                          : 'ସଂରକ୍ଷଣ ପାଇଁ ପ୍ରଶ୍ନ ଚୟନ କରନ୍ତୁ (0 Selected)'}
+                      </span>
+                    </button>
+                  );
+                })()
               )}
             </div>
           </div>
@@ -3752,6 +4067,143 @@ export const QuestionBankScreen: React.FC<QuestionBankScreenProps> = ({
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* MODAL: DUPLICATE QUESTIONS SCANNER & AUDIT */}
+      {/* ========================================================================= */}
+      {isDuplicateScannerOpen && selectedChapter && (
+        <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5">
+          <div className="bg-white rounded-3xl max-w-2xl w-full max-h-[90vh] flex flex-col shadow-2xl border border-slate-200 animate-in zoom-in-95 overflow-hidden">
+            {/* Header */}
+            <div className="p-4 sm:p-5 border-b border-slate-100 flex items-center justify-between gap-3 bg-gradient-to-r from-emerald-50 via-teal-50 to-cyan-50">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-emerald-600 text-white flex items-center justify-center shadow-md shadow-emerald-500/20 shrink-0">
+                  <ShieldCheck className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="font-odia font-bold text-base text-slate-900 leading-tight">
+                    🔍 ପ୍ରଶ୍ନ ଡୁପ୍ଲିକେଟ୍ ଯାଞ୍ଚ (Duplicate Scanner)
+                  </h3>
+                  <p className="font-odia text-xs text-slate-500 mt-0.5">
+                    {selectedChapter.nameOdia || selectedChapter.name} • ସମୁଦାୟ {questions.length} ଟି ପ୍ରଶ୍ନ ସ୍କାନ୍ ହୋଇଛି
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setIsDuplicateScannerOpen(false)}
+                className="p-2 rounded-2xl hover:bg-white text-slate-400 hover:text-slate-700 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="p-4 sm:p-6 overflow-y-auto space-y-4 flex-1">
+              {duplicateScanResults.length === 0 ? (
+                <div className="text-center py-8 px-4 space-y-3">
+                  <div className="w-16 h-16 mx-auto rounded-3xl bg-emerald-100 text-emerald-600 flex items-center justify-center shadow-inner">
+                    <CheckCircle2 className="w-9 h-9" />
+                  </div>
+                  <h4 className="font-odia font-bold text-lg text-emerald-900">
+                    🎉 କୌଣସି ଡୁପ୍ଲିକେଟ୍ ମିଳିଲା ନାହିଁ! (100% Unique)
+                  </h4>
+                  <p className="font-odia text-xs text-slate-600 max-w-md mx-auto leading-relaxed">
+                    ଏହି ଅଧ୍ୟାୟରେ ଥିବା ସମସ୍ତ <b>{questions.length} ଟି ପ୍ରଶ୍ନ</b> ପରସ୍ପର ଠାରୁ ସମ୍ପୂର୍ଣ୍ଣ ଅନନ୍ୟ ଏବଂ ଭିନ୍ନ ଅଟନ୍ତି। କୌଣସି ପ୍ରଶ୍ନ ରିପିଟ୍ ହୋଇନାହିଁ।
+                  </p>
+                  <div className="pt-2">
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-50 text-emerald-700 text-xs font-bold border border-emerald-200">
+                      <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                      ସମସ୍ତ {questions.length} ଟି ପ୍ରଶ୍ନ ଯାଞ୍ଚିତ ଓ ସୁରକ୍ଷିତ
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="p-3.5 rounded-2xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-center gap-3">
+                    <AlertCircle className="w-5 h-5 text-amber-600 shrink-0" />
+                    <div>
+                      <p className="font-bold">
+                        ⚠️ ଏହି ଅଧ୍ୟାୟରେ {duplicateScanResults.length} ଯୋଡ଼ା ସମ୍ଭାବ୍ୟ ଡୁପ୍ଲିକେଟ୍ ପ୍ରଶ୍ନ ମିଳିଛି!
+                      </p>
+                      <p className="text-[11px] text-amber-700 mt-0.5">
+                        ଦୟାକରି ତଳେ ତୁଳନା କରନ୍ତୁ ଏବଂ ଅନାବଶ୍ୟକ ଥିବା ଦ୍ୱିତୀୟ ପ୍ରଶ୍ନକୁ ଡିଲିଟ୍ କରିପାରିବେ:
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="space-y-3">
+                    {duplicateScanResults.map((dup, idx) => (
+                      <div
+                        key={idx}
+                        className="p-4 rounded-2xl border border-amber-200/90 bg-amber-50/20 space-y-3"
+                      >
+                        <div className="flex items-center justify-between gap-2 border-b border-amber-100 pb-2">
+                          <span className="px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[11px] font-bold">
+                            ଡୁପ୍ଲିକେଟ୍ ଯୋଡ଼ି #{idx + 1} ({dup.matchType === 'exact' ? 'ହୁବହୁ ସମାନ (Exact)' : 'ସାମଞ୍ଜସ୍ୟ (Partial)'})
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteDuplicateFromScan(dup.itemB.id)}
+                            className="px-2.5 py-1 rounded-xl bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 font-bold text-xs flex items-center gap-1 cursor-pointer transition-colors"
+                            title="ଦ୍ୱିତୀୟ ପ୍ରଶ୍ନଟିକୁ ହଟାନ୍ତୁ"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>ପ୍ରଶ୍ନ #{dup.indexB} ହଟାନ୍ତୁ</span>
+                          </button>
+                        </div>
+
+                        <div className="space-y-2 text-xs">
+                          {/* Item A */}
+                          <div className="p-2.5 rounded-xl bg-white border border-slate-200 space-y-1">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase">
+                              ପ୍ରଥମ ପ୍ରଶ୍ନ (Original - #{dup.indexA})
+                            </span>
+                            <p className="font-odia font-semibold text-slate-800">
+                              {dup.itemA.question}
+                            </p>
+                          </div>
+
+                          {/* Item B */}
+                          <div className="p-2.5 rounded-xl bg-white border border-amber-300 space-y-1">
+                            <span className="text-[10px] font-bold text-amber-700 uppercase">
+                              ରିପିଟ୍ ହୋଇଥିବା ପ୍ରଶ୍ନ (Duplicate - #{dup.indexB})
+                            </span>
+                            <p className="font-odia font-semibold text-slate-800">
+                              {dup.itemB.question}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="p-4 border-t border-slate-100 flex items-center justify-between gap-3 bg-slate-50">
+              <button
+                type="button"
+                onClick={handleOpenDuplicateScanner}
+                className="px-3.5 py-2 rounded-xl bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 font-bold text-xs flex items-center gap-1.5 cursor-pointer transition-colors"
+              >
+                <RefreshCw className="w-3.5 h-3.5 text-slate-500" />
+                <span>ପୁନର୍ବାର ଯାଞ୍ଚ (Re-Scan)</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setIsDuplicateScannerOpen(false)}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs cursor-pointer transition-colors"
+              >
+                ବନ୍ଦ କରନ୍ତୁ (Close)
+              </button>
+            </div>
           </div>
         </div>
       )}

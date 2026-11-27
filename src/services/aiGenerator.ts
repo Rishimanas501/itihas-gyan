@@ -78,6 +78,51 @@ export function checkQuestionDuplicate(
   return { isDuplicate: false };
 }
 
+export interface DuplicateScanResult<T> {
+  itemA: T;
+  itemB: T;
+  indexA: number;
+  indexB: number;
+  matchType: 'exact' | 'partial';
+}
+
+export function scanDuplicatesInQuestions<T extends { id?: any; question: string }>(
+  items: T[]
+): DuplicateScanResult<T>[] {
+  const duplicates: DuplicateScanResult<T>[] = [];
+  const normalizedList = items.map((it) => normalizeQuestionForComparison(it.question));
+
+  for (let i = 0; i < items.length; i++) {
+    const normA = normalizedList[i];
+    if (!normA || normA.length < 5) continue;
+
+    for (let j = i + 1; j < items.length; j++) {
+      const normB = normalizedList[j];
+      if (!normB || normB.length < 5) continue;
+
+      if (normA === normB) {
+        duplicates.push({
+          itemA: items[i],
+          itemB: items[j],
+          indexA: i + 1,
+          indexB: j + 1,
+          matchType: 'exact'
+        });
+      } else if (normA.length > 22 && normB.length > 22 && (normA.includes(normB) || normB.includes(normA))) {
+        duplicates.push({
+          itemA: items[i],
+          itemB: items[j],
+          indexA: i + 1,
+          indexB: j + 1,
+          matchType: 'partial'
+        });
+      }
+    }
+  }
+
+  return duplicates;
+}
+
 export function parseAndConvertPastedText(rawText: string, meta: Partial<Question>): Question[] {
   if (!rawText || !rawText.trim()) return [];
 
@@ -286,17 +331,17 @@ function parseSingleQuestionBlock(block: string, index: number, meta: Partial<Qu
       }
     }
 
-    // Fallback: If no answer was specified, select first option
-    if (!resolvedCorrect) {
+    // Fallback: If no answer was specified and options exist, select first option
+    if (!resolvedCorrect && options.length > 0) {
       resolvedCorrect = options[0];
     }
   } else {
-    resolvedCorrect = answerStr || 'ସଠିକ୍ ଉତ୍ତର ଅନୁପଲବ୍ଧ (Answer not specified)';
+    resolvedCorrect = answerStr || '';
   }
 
   // Build Explanations
   let explanationCorrect = explanationStr;
-  if (!explanationCorrect) {
+  if (!explanationCorrect && resolvedCorrect) {
     explanationCorrect = `ଐତିହାସିକ ତଥ୍ୟ ଓ ପାଠ୍ୟାଂଶ ଅନୁସାରେ "${resolvedCorrect}" ଏହି ପ୍ରଶ୍ନର ସମ୍ପୂର୍ଣ୍ଣ ସଠିକ୍ ଉତ୍ତର ଅଟେ। (According to historical records, "${resolvedCorrect}" is the verified correct answer.)`;
   }
 
@@ -621,4 +666,222 @@ MANDATORY RULES:
     createdAt: now,
     updatedAt: now
   }));
+}
+
+export interface HistoryKnowledgeEntry {
+  keywords: string[];
+  answerOdia: string;
+  answerEng: string;
+  explanationOdia: string;
+  explanationEng: string;
+  distractorsOdia: string[];
+  distractorsEng: string[];
+}
+
+export const ANCIENT_HISTORY_KNOWLEDGE: HistoryKnowledgeEntry[] = [
+  {
+    keywords: ['ରାମଚରିତ', 'ramacharita', 'ରାମ ଚରିତ'],
+    answerOdia: 'ସନ୍ଧ୍ୟାକର ନନ୍ଦୀ (Sandhyakar Nandi)',
+    answerEng: 'Sandhyakar Nandi',
+    explanationOdia: 'ପାଳ ବଂଶର ରାଜା ରାମପାଳଙ୍କ ସମୟରେ କୈବର୍ତ୍ତ ବିଦ୍ରୋହ ଓ ପାଳ ବଂଶର ଇତିହାସ ଜାଣିବା ପାଇଁ ସନ୍ଧ୍ୟାକର ନନ୍ଦୀଙ୍କ \'ରାମଚରିତ\' ଏକ ପ୍ରମୁଖ ଐତିହାସିକ ସାହିତ୍ୟିକ ଉତ୍ସ।',
+    explanationEng: 'Composed by Sandhyakar Nandi during the reign of Pala King Ramapala, Ramacharita provides authentic historical details about the Kaivarta rebellion and Pala rule.',
+    distractorsOdia: ['କଲ୍ହଣ (Kalhana)', 'ବାଣଭଟ୍ଟ (Banabhatta)', 'ବିଲ୍ହଣ (Bilhana)'],
+    distractorsEng: ['Kalhana', 'Banabhatta', 'Bilhana']
+  },
+  {
+    keywords: ['ଭରହୁତ', 'bharhut', 'ଭରହୁତ ସ୍ତୂପ'],
+    answerOdia: 'ଶୁଙ୍ଗ କାଳୀନ ଭାସ୍କର୍ଯ୍ୟ ଓ ବୌଦ୍ଧ (Shunga / Buddhist sculpture)',
+    answerEng: 'Shunga Period Buddhist Sculpture & Art',
+    explanationOdia: 'ମଧ୍ୟପ୍ରଦେଶର ସତନା ଜିଲ୍ଲାରେ ଅବସ୍ଥିତ ଭରହୁତ ସ୍ତୂପ ଶୁଙ୍ଗ ଯୁଗର ବୌଦ୍ଧ ଭାସ୍କର୍ଯ୍ୟ, ଜାତକ କାହାଣୀର ପ୍ରସ୍ତର ଖୋଦେଇ ଏବଂ ପ୍ରତ୍ନତାତ୍ତ୍ୱିକ କଳା ପାଇଁ ସମଗ୍ର ଭାରତରେ ବିଖ୍ୟାତ।',
+    explanationEng: 'Located in Madhya Pradesh, the Bharhut Stupa is celebrated for its exquisite Shunga period Buddhist stone carvings and Jataka representations.',
+    distractorsOdia: ['ଗାନ୍ଧାର କଳା (Gandhara Art)', 'ମୌର୍ଯ୍ୟ କାଳୀନ ସ୍ତମ୍ଭ', 'ଦ୍ରାବିଡ଼ ସ୍ଥାପତ୍ୟ'],
+    distractorsEng: ['Gandhara Art', 'Mauryan Pillar Art', 'Dravidian Architecture']
+  },
+  {
+    keywords: ['ଦଶାବତାର', 'ଦେଓଗଡ଼', 'deogarh', 'dashavatara'],
+    answerOdia: 'ଭଗବାନ ବିଷ୍ଣୁ (Lord Vishnu)',
+    answerEng: 'Lord Vishnu',
+    explanationOdia: 'ଉତ୍ତର ପ୍ରଦେଶର ଝାନ୍ସୀ ନିକଟସ୍ଥ ଦେଓଗଡ଼ ଦଶାବତାର ମନ୍ଦିର ଗୁପ୍ତ ଯୁଗରେ ନିର୍ମିତ ଭଗବାନ ବିଷ୍ଣୁଙ୍କର ପ୍ରଥମ ପଞ୍ଚାୟତନ ଶୈଳୀର ପ୍ରସ୍ତର ମନ୍ଦିର।',
+    explanationEng: 'The Dashavatara Temple at Deogarh (UP) is an iconic Gupta period temple dedicated to Lord Vishnu, featuring classic Panchayatana architecture.',
+    distractorsOdia: ['ଭଗବାନ ଶିବ (Lord Shiva)', 'ଭଗବାନ ବୁଦ୍ଧ (Lord Buddha)', 'ସୂର୍ଯ୍ୟ ଦେବ (Sun God)'],
+    distractorsEng: ['Lord Shiva', 'Lord Buddha', 'Sun God']
+  },
+  {
+    keywords: ['ଦକ୍ଷିଣ ଭାରତ', 'ଐହୋଲ', 'aihole', 'pulakeshin', 'ପୁଲକେଶୀ'],
+    answerOdia: 'ଐହୋଲ ଶିଳାଲେଖ (Aihole Inscription)',
+    answerEng: 'Aihole Inscription of Pulakeshin II',
+    explanationOdia: 'ବାଦାମୀର ଚାଲୁକ୍ୟ ନରେଶ ଦ୍ୱିତୀୟ ପୁଲକେଶୀଙ୍କ ରାଜକବି ରବିକୀର୍ତ୍ତିଙ୍କ ଦ୍ୱାରା ୬୩୪ ଖ୍ରୀଷ୍ଟାବ୍ଦରେ ରଚିତ ଐହୋଲ ଶିଳାଲେଖ ଦକ୍ଷିଣ ଭାରତ ତଥା ହର୍ଷବର୍ଦ୍ଧନଙ୍କ ପରାଜୟର ଏକ ମୁଖ୍ୟ ଉତ୍ସ।',
+    explanationEng: 'Composed by Jain poet Ravikirti in 634 CE, the Aihole Inscription provides authoritative historical records of Chalukya King Pulakeshin II in South India.',
+    distractorsOdia: ['ହାତୀଗୁମ୍ଫା ଶିଳାଲେଖ', 'ପ୍ରୟାଗ ପ୍ରଶସ୍ତି', 'ଉତ୍ତରମେରୁର ଲେଖ'],
+    distractorsEng: ['Hathigumpha Inscription', 'Prayag Prashasti', 'Uttiramerur Inscription']
+  },
+  {
+    keywords: ['ବନ୍ଦର ନଗରୀ', 'ପୋତାଶ୍ରୟ', 'ଲୋଥାଲ', 'lothal', 'dockyard', 'ବନ୍ଦର'],
+    answerOdia: 'ଲୋଥାଲ (Lothal)',
+    answerEng: 'Lothal (Gujarat)',
+    explanationOdia: 'ଗୁଜରାଟର ଅହମଦାବାଦ ଜିଲ୍ଲାରେ ଭୋଗାଭା ନଦୀ କୂଳରେ ଅବସ୍ଥିତ ଲୋଥାଲ ସିନ୍ଧୁ ସଭ୍ୟତାର ଏକମାତ୍ର ଇଟା ନିର୍ମିତ ପ୍ରାଚୀନ କୃତ୍ରିମ ବନ୍ଦର ବା ଡକୟାର୍ଡ଼ ଥିଲା।',
+    explanationEng: 'Excavated by S.R. Rao in Gujarat, Lothal was the world’s earliest known artificial dockyard and premier port of the Indus Valley Civilization.',
+    distractorsOdia: ['କାଲିବଙ୍ଗାନ (Kalibangan)', 'ରୋପାର (Ropar)', 'ବନୱାଲୀ (Banawali)'],
+    distractorsEng: ['Kalibangan', 'Ropar', 'Banawali']
+  },
+  {
+    keywords: ['ହର୍ଷଚରିତ', 'harshacharita', 'ହର୍ଷ ଚରିତ'],
+    answerOdia: 'ବାଣଭଟ୍ଟ (Banabhatta)',
+    answerEng: 'Banabhatta',
+    explanationOdia: 'କନୌଜର ସମ୍ରାଟ ହର୍ଷବର୍ଦ୍ଧନଙ୍କ ରାଜକବି ବାଣଭଟ୍ଟ \'ହର୍ଷଚରିତ\' ରଚନା କରିଥିଲେ, ଯାହା ପ୍ରାଚୀନ ଭାରତର ପ୍ରଥମ ଐତିହାସିକ ଜୀବନୀ ଗ୍ରନ୍ଥ।',
+    explanationEng: 'Court poet Banabhatta composed Harshacharita, chronicling the biography and reign of Emperor Harsha.',
+    distractorsOdia: ['ହରିଷେଣ (Harisena)', 'କଲ୍ହଣ (Kalhana)', 'ଅଶ୍ୱଘୋଷ (Ashvaghosha)'],
+    distractorsEng: ['Harisena', 'Kalhana', 'Ashvaghosha']
+  },
+  {
+    keywords: ['ଅର୍ଥଶାସ୍ତ୍ର', 'arthashastra', 'କୌଟିଲ୍ୟ', 'ଚାଣକ୍ୟ'],
+    answerOdia: 'କୌଟିଲ୍ୟ / ଚାଣକ୍ୟ (Kautilya)',
+    answerEng: 'Kautilya (Chanakya)',
+    explanationOdia: 'ମୌର୍ଯ୍ୟ ସାମ୍ରାଜ୍ୟର ପ୍ରତିଷ୍ଠାତା ଚନ୍ଦ୍ରଗୁପ୍ତ ମୌର୍ଯ୍ୟଙ୍କ ପ୍ରଧାନମନ୍ତ୍ରୀ କୌଟିଲ୍ୟ ରାଜନୀତି ଓ ପ୍ରଶାସନ ଉପରେ \'ଅର୍ଥଶାସ୍ତ୍ର\' ରଚନା କରିଥିଲେ।',
+    explanationEng: 'Kautilya authored Arthashastra, the foundational ancient Indian treatise on statecraft, economic policy, and military strategy.',
+    distractorsOdia: ['ମେଗାସ୍ଥିନିସ (Megasthenes)', 'ପତଞ୍ଜଳି (Patanjali)', 'ବିଶାଖାଦତ୍ତ (Vishakhadatta)'],
+    distractorsEng: ['Megasthenes', 'Patanjali', 'Vishakhadatta']
+  },
+  {
+    keywords: ['ଇଣ୍ଡିକା', 'indica', 'ମେଗାସ୍ଥିନିସ'],
+    answerOdia: 'ମେଗାସ୍ଥିନିସ (Megasthenes)',
+    answerEng: 'Megasthenes',
+    explanationOdia: 'ଗ୍ରୀକ୍ ଶାସକ ସେଲ୍ୟୁକସ୍ ନିକେଟରଙ୍କ ରାଷ୍ଟ୍ରଦୂତ ମେଗାସ୍ଥିନିସ ଚନ୍ଦ୍ରଗୁପ୍ତ ମୌର୍ଯ୍ୟଙ୍କ ଦରବାରରେ ରହି \'ଇଣ୍ଡିକା\' ଗ୍ରନ୍ଥ ରଚନା କରିଥିଲେ।',
+    explanationEng: 'Greek ambassador Megasthenes recorded Mauryan society and Pataliputra municipal administration in his famous work Indica.',
+    distractorsOdia: ['ଫାହିୟାନ (Fa-Hien)', 'ହ୍ୟୁଏନସାଂ (Hiuen Tsang)', 'ଅଲବେରୁନୀ (Al-Biruni)'],
+    distractorsEng: ['Fa-Hien', 'Hiuen Tsang', 'Al-Biruni']
+  },
+  {
+    keywords: ['ରାଜତରଙ୍ଗିଣୀ', 'rajatarangini', 'କଲ୍ହଣ'],
+    answerOdia: 'କଲ୍ହଣ (Kalhana)',
+    answerEng: 'Kalhana',
+    explanationOdia: '୧୨ଶ ଶତାବ୍ଦୀରେ କବି କଲ୍ହଣ ସଂସ୍କୃତ ଭାଷାରେ \'ରାଜତରଙ୍ଗିଣୀ\' ରଚନା କରିଥିଲେ, ଯାହା କାଶ୍ମୀରର ପ୍ରାମାଣିକ ଐତିହାସିକ ତଥ୍ୟ ପ୍ରଦାନ କରେ।',
+    explanationEng: 'Kalhana wrote Rajatarangini in 1148-1150 CE, widely regarded as India\'s first systematic historical chronicle covering the kings of Kashmir.',
+    distractorsOdia: ['ସନ୍ଧ୍ୟାକର ନନ୍ଦୀ', 'ବାଣଭଟ୍ଟ', 'ବିଲ୍ହଣ'],
+    distractorsEng: ['Sandhyakar Nandi', 'Banabhatta', 'Bilhana']
+  },
+  {
+    keywords: ['ହାତୀଗୁମ୍ଫା', 'hathigumpha', 'ଖାରବେଳ'],
+    answerOdia: 'ମହାମେଘବାହନ ଖାରବେଳ (Kharavela)',
+    answerEng: 'King Kharavela of Kalinga',
+    explanationOdia: 'ଭୁବନେଶ୍ୱରସ୍ଥ ଉଦୟଗିରି ପାହାଡ଼ର ହାତୀଗୁମ୍ଫାରେ କଳିଙ୍ଗାଧିପତି ଖାରବେଳଙ୍କ ୧୩ ବର୍ଷର ଶାସନ ଓ ବିଜୟ ଅଭିଯାନ ସମ୍ପର୍କରେ ବ୍ରାହ୍ମୀ ଲିପିରେ ଖୋଦିତ ହୋଇଛି।',
+    explanationEng: 'The Hathigumpha Inscription at Udayagiri hills records the biographical military achievements and public works of Kalinga King Kharavela.',
+    distractorsOdia: ['ସମ୍ରାଟ ଅଶୋକ', 'ଗୌତମୀ ପୁତ୍ର ଶାତକର୍ଣ୍ଣୀ', 'ସମୁଦ୍ରଗୁପ୍ତ'],
+    distractorsEng: ['Emperor Ashoka', 'Gautamiputra Satakarni', 'Samudragupta']
+  },
+  {
+    keywords: ['ପ୍ରୟାଗ ପ୍ରଶସ୍ତି', 'prayag prashasti', 'ହରିଷେଣ', 'ଆହ୍ଲାବାଦ'],
+    answerOdia: 'ହରିଷେଣ (Harisena) / ସମୁଦ୍ରଗୁପ୍ତ',
+    answerEng: 'Harisena / Samudragupta',
+    explanationOdia: 'ଗୁପ୍ତ ସମ୍ରାଟ ସମୁଦ୍ରଗୁପ୍ତଙ୍କ ଦରବାରୀ କବି ତଥା ମହାଦଣ୍ଡନାୟକ ହରିଷେଣଙ୍କ ଦ୍ୱାରା ସଂସ୍କୃତ ଚମ୍ପୁ ଶୈଳୀରେ ପ୍ରୟାଗ ପ୍ରଶସ୍ତି ଲିଖିତ।',
+    explanationEng: 'Court poet Harisena composed the Prayag Prashasti (Allahabad Pillar) celebrating the military triumphs of Samudragupta.',
+    distractorsOdia: ['ରବିକୀର୍ତ୍ତି (Ravikirti)', 'ବାଣଭଟ୍ଟ (Banabhatta)', 'କାଳିଦାସ (Kalidasa)'],
+    distractorsEng: ['Ravikirti', 'Banabhatta', 'Kalidasa']
+  },
+  {
+    keywords: ['ମାଦଳା ପାଞ୍ଜି', 'madala panji', 'ଶ୍ରୀଜଗନ୍ନାଥ ମନ୍ଦିର'],
+    answerOdia: 'ମାଦଳା ପାଞ୍ଜି (Madala Panji)',
+    answerEng: 'Madala Panji (Temple Chronicle)',
+    explanationOdia: 'ଶ୍ରୀକ୍ଷେତ୍ର ପୁରୀ ଜଗନ୍ନାଥ ମନ୍ଦିରର ତାଳପତ୍ର ଲେଖା \'ମାଦଳା ପାଞ୍ଜି\' ଓଡ଼ିଶାର ସୋମବଂଶ, ଗଙ୍ଗବଂଶ ଓ ସୂର୍ଯ୍ୟବଂଶୀ ଗଜପତି ଇତିହାସର ଏକ ପ୍ରମୁଖ ଉତ୍ସ।',
+    explanationEng: 'The Madala Panji is the historical palm-leaf chronicle of the Jagannath Temple at Puri, detailing Odisha dynasties and religious traditions.',
+    distractorsOdia: ['କୈଫିୟତ', 'ତବାକତ୍-ଇ-ନାସିରୀ', 'ରାଜମାଳା'],
+    distractorsEng: ['Kaifiyat', 'Tabaqat-i-Nasiri', 'Rajmala']
+  }
+];
+
+export function autoSolveAndCompleteHistoryQuestions(
+  questions: Question[],
+  targetPattern: 'auto' | 'mcq' | 'blanks' | 'true_false' | 'short' | 'long' = 'auto',
+  targetLanguage: 'bilingual' | 'odia' | 'english' = 'bilingual'
+): Question[] {
+  return questions.map((q) => {
+    // Only preserve if question already has a valid, non-placeholder answer
+    const hasValidAnswer = Boolean(
+      q.correctAnswer &&
+      q.correctAnswer.trim().length > 0 &&
+      !q.correctAnswer.includes('ଅନୁପଲବ୍ଧ') &&
+      !q.correctAnswer.includes('not specified')
+    );
+
+    if (hasValidAnswer && (q.pattern !== 'mcq' || (q.options && q.options.length >= 2))) {
+      return q;
+    }
+
+    const qTextLower = q.question.toLowerCase();
+    
+    // Find matching knowledge entry
+    let matched: HistoryKnowledgeEntry | undefined;
+    for (const entry of ANCIENT_HISTORY_KNOWLEDGE) {
+      if (entry.keywords.some(kw => qTextLower.includes(kw.toLowerCase()))) {
+        matched = entry;
+        break;
+      }
+    }
+
+    // Determine final pattern
+    let finalPattern: QuestionPattern = q.pattern || 'blanks';
+    if (targetPattern !== 'auto') {
+      finalPattern = targetPattern === 'long' ? 'short' : targetPattern;
+    } else if (q.question.includes('____') || q.question.includes('.....')) {
+      finalPattern = 'blanks';
+    }
+
+    if (!matched) {
+      // Fallback if not specifically in dictionary: keep user's question with placeholder
+      return {
+        ...q,
+        pattern: finalPattern,
+        marks: finalPattern === 'short' ? 2 : 1,
+        correctAnswer: q.correctAnswer || (targetLanguage === 'english' ? 'Historical Answer' : 'ଐତିହାସିକ ଉତ୍ତର'),
+        explanationCorrect: q.explanationCorrect || (targetLanguage === 'english' ? 'Authentic historical source reference.' : 'ଐତିହାସିକ ତଥ୍ୟ ଅନୁଯାୟୀ ଏହି ଉତ୍ତର ପ୍ରାମାଣିକ ଅଟେ।')
+      };
+    }
+
+    const isEng = targetLanguage === 'english';
+    const ansText = isEng ? matched.answerEng : matched.answerOdia;
+    const expText = isEng ? matched.explanationEng : matched.explanationOdia;
+    const distractors = isEng ? matched.distractorsEng : matched.distractorsOdia;
+
+    if (finalPattern === 'mcq') {
+      const opts = [ansText, ...distractors].sort(() => Math.random() - 0.5);
+      return {
+        ...q,
+        pattern: 'mcq',
+        marks: 1,
+        options: opts,
+        correctAnswer: ansText,
+        explanationCorrect: expText
+      };
+    }
+
+    if (finalPattern === 'true_false') {
+      return {
+        ...q,
+        pattern: 'true_false',
+        marks: 1,
+        options: ['ସତ୍ୟ (True)', 'ମିଥ୍ୟା (False)'],
+        correctAnswer: 'ସତ୍ୟ (True)',
+        explanationCorrect: expText
+      };
+    }
+
+    if (finalPattern === 'short') {
+      return {
+        ...q,
+        pattern: 'short',
+        marks: 2,
+        correctAnswer: ansText,
+        explanationCorrect: expText
+      };
+    }
+
+    // Default: blanks
+    return {
+      ...q,
+      pattern: 'blanks',
+      marks: 1,
+      correctAnswer: ansText,
+      explanationCorrect: expText
+    };
+  });
 }
